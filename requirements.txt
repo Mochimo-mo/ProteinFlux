@@ -6,4 +6,14 @@ h5py
 biopython
 torchdiffeq
 einops
+
+# FluxSite dependencies
+fair-esm
+scikit-learn
+matplotlib
+seaborn
+tqdm
+joblib
+lmdb  # optional: large-dataset feature caching
+
 swanlab  # optional: only needed with --swanlab flag

@@ -1,0 +1,53 @@
+# Claude Code
+.claude/
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+*.egg
+*.egg-info/
+dist/
+build/
+eggs/
+parts/
+var/
+sdist/
+develop-eggs/
+.installed.cfg
+lib/
+lib64/
+
+# Virtual environments
+.env
+.venv
+env/
+venv/
+ENV/
+
+# Jupyter
+.ipynb_checkpoints/
+*.ipynb
+
+# Data & model checkpoints
+*.h5
+*.hdf5
+*.pt
+*.pth
+*.ckpt
+*.pkl
+*.lmdb
+*.lmdb-lock
+
+# Logs & outputs
+*.log
+outputs/
+runs/
+wandb/
+lightning_logs/
+
+# OS
+.DS_Store
+Thumbs.db
