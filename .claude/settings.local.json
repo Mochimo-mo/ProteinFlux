@@ -1,0 +1,12 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(cp prot_flow/dataset.py datasets/dataset.py)",
+      "Bash(cp prot_flow/datamodule.py datasets/datamodule.py)",
+      "Bash(cp prot_flow/model/latent_model.py model/latent_model.py)",
+      "Bash(cp prot_flow/model/ipa.py model/ipa.py)",
+      "Bash(cp prot_flow/model/layers.py model/layers.py)",
+      "Bash(python -c ' *)"
+    ]
+  }
+}
