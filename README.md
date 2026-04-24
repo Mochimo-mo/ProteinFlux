@@ -104,7 +104,7 @@ FluxSite is a deep learning module for predicting post-translational modificatio
 ### Supported PTM types
 
 | PTM | Target residues |
-|-----|----------------|
+|-----|-----------------|
 | phosphorylation | S, T, Y |
 | acetylation | K |
 | methylation | K, R |
@@ -114,6 +114,10 @@ FluxSite is a deep learning module for predicting post-translational modificatio
 | o-linked glycosylation | S, T |
 | palmitoylation / nitrosylation | C |
 | malonylation / crotonylation | K |
+| succinylation | K |
+| amidation | C-terminal / N-terminal (Gly) |
+| glutathionylation | C |
+| sulfoxidation | M |
 | hydroxylation | P, K, W, Y |
 
 ### Module structure
