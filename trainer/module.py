@@ -233,6 +233,9 @@ class ProteinWrapper(Wrapper):
         if self.use_ptm_feat and hasattr(self, 'ptm_adapter') and 'ptm_feat' in batch:
             model_kwargs['ptm_emb'] = self.ptm_adapter(batch['ptm_feat'].to(self.device))
 
+        if 'esm2_emb' in batch:
+            model_kwargs['esm2_emb'] = batch['esm2_emb'].to(self.device)
+
         return {
             'rigids': rigids,
             'latents': latents,

@@ -162,6 +162,66 @@ class ProteinDataset(torch.utils.data.Dataset):
         }
 
 
+class ESM2Dataset(ProteinDataset):
+    """Extends ProteinDataset with per-residue ESM2 embeddings loaded from a pkl file."""
+
+    def __init__(self, args, split_csv, repeat=1):
+        super().__init__(args, split_csv, repeat=repeat)
+
+        self.esm2_dim = getattr(args, 'esm2_dim', 1280)
+        emb_path = getattr(args, 'esm2_emb_path', None)
+
+        if not emb_path:
+            raise ValueError("ESM2Dataset requires --esm2_emb_path.")
+        if not os.path.exists(emb_path):
+            raise FileNotFoundError(f"ESM2 embeddings file not found: {emb_path}")
+
+        import pickle
+        print(f"Loading ESM2 embeddings from: {emb_path}")
+        with open(emb_path, 'rb') as f:
+            self.esm2_embeddings = pickle.load(f)
+        print(f"Loaded ESM2 embeddings for {len(self.esm2_embeddings)} proteins.")
+
+    def __getitem__(self, idx):
+        data = super().__getitem__(idx)
+
+        raw_name = data.get('name', '')
+        candidates = [
+            raw_name,
+            raw_name.upper(),
+            raw_name.lower(),
+            raw_name.replace('.pdb', ''),
+            raw_name.replace('.pdb', '').upper(),
+        ]
+
+        emb_raw = None
+        for key in candidates:
+            if key in self.esm2_embeddings:
+                emb_raw = self.esm2_embeddings[key]
+                break
+
+        if emb_raw is None:
+            raise KeyError(
+                f"ESM2 embedding not found for protein '{raw_name}'. "
+                f"Tried keys: {candidates}"
+            )
+
+        emb = torch.from_numpy(emb_raw).float() if isinstance(emb_raw, np.ndarray) else emb_raw
+        seq_len = len(data['seqres'])
+        crop_start = data.get('crop_start', 0)
+        emb_cropped = emb[crop_start: crop_start + seq_len]
+
+        if emb_cropped.shape[0] != seq_len:
+            raise ValueError(
+                f"ESM2 embedding length mismatch for '{raw_name}': "
+                f"expected {seq_len}, got {emb_cropped.shape[0]} "
+                f"(crop_start={crop_start}, total_len={emb.shape[0]})"
+            )
+
+        data['esm2_emb'] = emb_cropped
+        return data
+
+
 class PTMDataset(ProteinDataset):
     """Extends ProteinDataset with residue-level PTM features loaded from a pkl file."""
 

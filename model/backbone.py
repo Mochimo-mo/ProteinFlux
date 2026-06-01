@@ -39,6 +39,28 @@ class LatentModel(nn.Module):
         self.cond_to_emb = nn.Linear(latent_dim, args.embed_dim)
         self.mask_to_emb = nn.Embedding(2, args.embed_dim)
 
+        self.use_esm2 = getattr(args, 'esm2_emb_path', None) is not None
+        if self.use_esm2:
+            esm2_dim = getattr(args, 'esm2_dim', 1280)
+            proj_dim = getattr(args, 'esm2_proj_dim', None)
+            if proj_dim is None:
+                proj_dim = (esm2_dim + args.embed_dim) // 2
+
+            def _make_esm2_proj(in_dim, hidden_dim, out_dim):
+                if hidden_dim == 0:
+                    return nn.Linear(in_dim, out_dim)
+                return nn.Sequential(
+                    nn.LayerNorm(in_dim),
+                    nn.Linear(in_dim, hidden_dim),
+                    nn.SiLU(),
+                    nn.Linear(hidden_dim, out_dim),
+                )
+
+            # IPA path: Xavier init (non-zero), ESM2 replaces aa_emb entirely
+            self.esm2_proj_ipa = _make_esm2_proj(esm2_dim, proj_dim, args.embed_dim)
+            # Main path: zero-init output layer so ESM2 contribution grows from zero
+            self.esm2_proj_main = _make_esm2_proj(esm2_dim, proj_dim, args.embed_dim)
+
         ipa_args = {
             'c_s': args.embed_dim,
             'c_z': 0,
@@ -130,21 +152,34 @@ class LatentModel(nn.Module):
         nn.init.constant_(self.emb_to_latent.linear.weight, 0)
         nn.init.constant_(self.emb_to_latent.linear.bias, 0)
 
-    def run_ipa(self, t, mask, start_frames, aatype, ptm_emb=None):
+        if self.use_esm2:
+            # esm2_proj_ipa: Xavier (non-zero) — IPA needs a real signal from step 0
+            # esm2_proj_main: zero-init output layer — main path ESM2 grows from zero
+            last_main = self.esm2_proj_main if isinstance(self.esm2_proj_main, nn.Linear) \
+                else self.esm2_proj_main[-1]
+            nn.init.zeros_(last_main.weight)
+            nn.init.zeros_(last_main.bias)
+
+    def run_ipa(self, t, mask, start_frames, aatype, ptm_emb=None, esm2_emb=None):
         B, L = mask.shape
         x = torch.zeros(B, L, self.args.embed_dim, device=mask.device)
-        if aatype is not None and not self.args.no_aa_emb:
+        if esm2_emb is not None and self.use_esm2:
+            # ESM2 replaces aa_emb: richer contextual sequence repr subsumes simple type lookup
+            x = x + self.esm2_proj_ipa(esm2_emb.to(x.device))
+            if ptm_emb is not None:
+                x = x + ptm_emb.to(x.device)
+        elif aatype is not None and not self.args.no_aa_emb:
+            # Fallback to aa_emb when ESM2 is not available
             aa_feat = self.aatype_to_emb(aatype)
             if ptm_emb is not None:
-                ptm_emb = ptm_emb.to(aa_feat.device)
-                aa_feat = aa_feat + ptm_emb
+                aa_feat = aa_feat + ptm_emb.to(aa_feat.device)
             x = x + aa_feat
         for layer in self.ipa_layers:
             x = layer(x, t, mask, frames=start_frames)
         return x
 
     def forward(self, x, t, mask, start_frames=None, end_frames=None,
-                x_cond=None, x_cond_mask=None, aatype=None, ptm_emb=None, **kwargs):
+                x_cond=None, x_cond_mask=None, aatype=None, ptm_emb=None, esm2_emb=None, **kwargs):
         x = self.latent_to_emb(x)
 
         if self.args.abs_pos_emb:
@@ -154,10 +189,15 @@ class LatentModel(nn.Module):
         if x_cond is not None:
             x = x + self.cond_to_emb(x_cond) + self.mask_to_emb(x_cond_mask)
 
+        # Add ESM2 embeddings as residue-level condition (broadcast across all frames)
+        if esm2_emb is not None and self.use_esm2:
+            x = x + self.esm2_proj_main(esm2_emb.to(x.device))[:, None]  # [B,L,C] -> [B,1,L,C]
+
         t = self.t_embedder(t * self.args.time_multiplier)[:, None]
 
         if self.args.prepend_ipa:
-            ipa_out = self.run_ipa(t[:, 0], mask[:, 0], start_frames, aatype, ptm_emb=ptm_emb)
+            ipa_out = self.run_ipa(t[:, 0], mask[:, 0], start_frames, aatype,
+                                   ptm_emb=ptm_emb, esm2_emb=esm2_emb)
             x = x + ipa_out[:, None]
 
         for layer_idx, layer in enumerate(self.layers):
@@ -166,5 +206,6 @@ class LatentModel(nn.Module):
         return self.emb_to_latent(x, t)
 
     def forward_inference(self, x, t, mask, start_frames=None, end_frames=None,
-                          x_cond=None, x_cond_mask=None, aatype=None, ptm_emb=None, **kwargs):
-        return self.forward(x, t, mask, start_frames, end_frames, x_cond, x_cond_mask, aatype, ptm_emb=ptm_emb)
+                          x_cond=None, x_cond_mask=None, aatype=None, ptm_emb=None, esm2_emb=None, **kwargs):
+        return self.forward(x, t, mask, start_frames, end_frames, x_cond, x_cond_mask, aatype,
+                            ptm_emb=ptm_emb, esm2_emb=esm2_emb)

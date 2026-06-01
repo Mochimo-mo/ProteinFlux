@@ -58,6 +58,19 @@ def parse_train_args():
     parser.add_argument('--ptm_feat_path', type=str, default=None,
                         help='Path to the PTM features pickle file')
 
+    ## ESM2 embedding settings
+    group = parser.add_argument_group("ESM2 embedding settings")
+    group.add_argument('--esm2_emb_path', type=str, default=None,
+                       help='Path to pre-computed ESM2 embeddings pkl file. '
+                            'Expected format: {protein_name: np.ndarray [L, esm2_dim]}. '
+                            'When set, ESM2 embeddings are used as an additional residue-level condition.')
+    group.add_argument('--esm2_dim', type=int, default=1280,
+                       help='Dimension of ESM2 embeddings (1280 for esm2_t33_650M, 480 for esm2_t12_35M)')
+    group.add_argument('--esm2_proj_dim', type=int, default=None,
+                       help='Hidden dim of the two-layer ESM2 projection MLP. '
+                            'Defaults to (esm2_dim + embed_dim) // 2. '
+                            'Set to 0 to use a single linear layer instead.')
+
     ### Masking settings
     group = parser.add_argument_group("Masking settings")
     group.add_argument('--no_aa_emb', action='store_true')
