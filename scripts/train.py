@@ -72,7 +72,7 @@ def main():
         accumulate_grad_batches=args.accumulate_grad,
         val_check_interval=args.val_freq,
         check_val_every_n_epoch=args.val_epoch_freq,
-        logger=logger,
+        logger=logger if logger is not None else False,
     )
 
     print("Starting training...")
