@@ -86,6 +86,7 @@ def main():
             mode='min',
             save_top_k=1,
             save_weights_only=False,
+            save_on_train_epoch_end=False,
             verbose=True,
         )
         callbacks.append(checkpoint_best)
