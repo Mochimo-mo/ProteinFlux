@@ -105,14 +105,14 @@ class Wrapper(pl.LightningModule):
     def on_validation_epoch_end(self):
         if self.args.ema:
             self.restore_cached_weights()
-        self.print_log(prefix='val', save=False)
 
-        val_logs = {key: self._log[key] for key in self._log if 'val_' in key}
-        if val_logs:
-            val_loss_list = val_logs.get('val_loss', [])
-            if val_loss_list:
-                mean_val_loss = np.mean(val_loss_list)
-                super().log('val_loss', mean_val_loss, sync_dist=False, prog_bar=True)
+        # Capture val_loss BEFORE print_log deletes the val_ entries from self._log
+        val_loss_list = self._log.get('val_loss', [])
+        if val_loss_list:
+            mean_val_loss = float(np.nanmean(val_loss_list))
+            super().log('val_loss', mean_val_loss, sync_dist=True, prog_bar=True)
+
+        self.print_log(prefix='val', save=False)
 
     def on_before_optimizer_step(self, optimizer):
         if (self.trainer.global_step + 1) % self.args.print_freq == 0:
