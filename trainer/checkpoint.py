@@ -1,7 +1,10 @@
 import os
 import json
+import argparse
 import torch
 import torch.nn as nn
+
+torch.serialization.add_safe_globals([argparse.Namespace])
 
 from trainer.ema import ExponentialMovingAverage
 

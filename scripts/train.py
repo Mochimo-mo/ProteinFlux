@@ -1,6 +1,12 @@
 import os
+import argparse
 import torch
 import pytorch_lightning as pl
+
+# PyTorch 2.6 changed torch.load default to weights_only=True.
+# PL checkpoints contain argparse.Namespace (from save_hyperparameters),
+# so we must allowlist it before any checkpoint is loaded.
+torch.serialization.add_safe_globals([argparse.Namespace])
 from pytorch_lightning.callbacks import ModelCheckpoint
 
 try:
