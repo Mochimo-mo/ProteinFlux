@@ -1,7 +1,5 @@
 import logging, socket, os
 
-model_dir = os.environ.get("MODEL_DIR", "./workdir/default")
-
 class Rank(logging.Filter):
     def filter(self, record):
         record.global_rank = os.environ.get("GLOBAL_RANK", 0)
@@ -10,6 +8,9 @@ class Rank(logging.Filter):
 
 
 def get_logger(name):
+    # Read MODEL_DIR here (not at import time) so parse_train_args() has already set it
+    model_dir = os.environ.get("MODEL_DIR", "./workdir/default")
+
     logger = logging.Logger(name)
     # logger.addFilter(Rank())
     level = {"crititical": 50, "error": 40, "warning": 30, "info": 20, "debug": 10}[
