@@ -62,13 +62,29 @@ def main():
     elif args.swanlab:
         print("Warning: --swanlab flag set but swanlab is not installed. Logging disabled.")
 
+    ckpt_dir = os.path.join(os.environ["MODEL_DIR"], 'checkpoints')
+
     checkpoint_periodic = ModelCheckpoint(
-        dirpath=os.path.join(os.environ["MODEL_DIR"], 'checkpoints'),
+        dirpath=ckpt_dir,
         filename='backup_{epoch:02d}',
         save_top_k=-1,
         every_n_epochs=args.ckpt_freq,
         save_weights_only=False,
     )
+
+    callbacks = [checkpoint_periodic]
+
+    if not args.no_validate:
+        checkpoint_best = ModelCheckpoint(
+            dirpath=ckpt_dir,
+            filename='best',
+            monitor='val_loss',
+            mode='min',
+            save_top_k=1,
+            save_weights_only=False,
+            verbose=True,
+        )
+        callbacks.append(checkpoint_best)
 
     trainer = pl.Trainer(
         accelerator="gpu" if torch.cuda.is_available() else 'auto',
@@ -80,7 +96,7 @@ def main():
         enable_progress_bar=not args.swanlab,
         gradient_clip_val=args.grad_clip,
         default_root_dir=os.environ["MODEL_DIR"],
-        callbacks=[checkpoint_periodic],
+        callbacks=callbacks,
         accumulate_grad_batches=args.accumulate_grad,
         val_check_interval=args.val_freq,
         check_val_every_n_epoch=args.val_epoch_freq,
