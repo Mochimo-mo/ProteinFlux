@@ -16,13 +16,17 @@ except ImportError:
     SWANLAB_AVAILABLE = False
 
 from trainer.config import parse_train_args
-from trainer.module import ProteinWrapper
-from data.module import DataModule
-from trainer.checkpoint import smart_load_checkpoint, save_args
 
 
 def main():
+    # parse_train_args() sets MODEL_DIR in os.environ.
+    # Modules that call get_logger() at import time must be imported AFTER this
+    # so the logger's FileHandler writes to the correct directory.
     args = parse_train_args()
+
+    from trainer.module import ProteinWrapper
+    from data.module import DataModule
+    from trainer.checkpoint import smart_load_checkpoint, save_args
 
     save_args(args, os.path.join(os.environ["MODEL_DIR"], 'args'))
     print(f"MODEL_DIR: {os.environ['MODEL_DIR']}")
