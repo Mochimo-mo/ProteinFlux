@@ -25,13 +25,19 @@ def main():
     dm = DataModule(args)
     model = ProteinWrapper(args)
 
-    if args.ckpt is not None:
-        print(f"Loading checkpoint: {args.ckpt}")
+    resume_ckpt = None
+    if getattr(args, 'resume', False) and args.ckpt is not None:
+        # Resume: restore full training state (epoch, optimizer, scheduler)
+        print(f"Resuming training from: {args.ckpt}")
+        resume_ckpt = args.ckpt
+    elif args.ckpt is not None:
+        # Fine-tune: load weights only, start from epoch 0
+        print(f"Loading checkpoint weights: {args.ckpt}")
         model = smart_load_checkpoint(model, args.ckpt)
     else:
         print("No checkpoint provided — training from scratch.")
 
-    if args.ema and hasattr(model, 'ema'):
+    if not resume_ckpt and args.ema and hasattr(model, 'ema'):
         print("Syncing pretrained weights into EMA shadow weights...")
         model.ema.load_state_dict({
             "params": model.model.state_dict(),
@@ -76,7 +82,7 @@ def main():
     )
 
     print("Starting training...")
-    trainer.fit(model, datamodule=dm)
+    trainer.fit(model, datamodule=dm, ckpt_path=resume_ckpt)
 
 
 if __name__ == '__main__':

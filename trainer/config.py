@@ -7,6 +7,9 @@ def parse_train_args():
 
     ## Trainer settings
     parser.add_argument("--ckpt", type=str, default=None)
+    parser.add_argument("--resume", action='store_true', default=False,
+                        help='Resume training from --ckpt (restores epoch, optimizer, scheduler). '
+                             'Without this flag, --ckpt only loads model weights (fine-tuning).')
     parser.add_argument("--validate", action='store_true', default=False)
     parser.add_argument("--num_workers", type=int, default=4)
 
