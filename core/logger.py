@@ -1,4 +1,5 @@
 import logging, socket, os
+from datetime import datetime
 
 class Rank(logging.Filter):
     def filter(self, record):
@@ -21,7 +22,8 @@ def get_logger(name):
     ch = logging.StreamHandler()
     ch.setLevel(logging.INFO)
     os.makedirs(model_dir, exist_ok=True)
-    fh = logging.FileHandler(os.path.join(model_dir, "log.out"))
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    fh = logging.FileHandler(os.path.join(model_dir, f"log_{timestamp}.out"))
     fh.setLevel(logging.DEBUG)
     # formatter = logging.Formatter(f'%(asctime)s [{socket.gethostname()}:%(process)d:%(global_rank)s:%(local_rank)s]
     # [%(levelname)s] %(message)s') #  (%(name)s)
