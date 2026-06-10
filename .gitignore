@@ -38,6 +38,7 @@ ENV/
 *.pth
 *.ckpt
 *.pkl
+*.pdb
 *.lmdb
 *.lmdb-lock
 
