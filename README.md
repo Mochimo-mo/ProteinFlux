@@ -6,9 +6,10 @@ modifications (PTMs).
 
 The release contains three components:
 
-1. **FluxSite** — a PTM-site feature extractor (`fluxsite/`). Predicts
-   phosphorylation propensity per residue and produces per-residue feature
-   vectors used to condition the PTM dynamics model.
+1. **FluxSite** — a standalone dual-modal (sequence + structure) **PTM-site
+   predictor** (`fluxsite/`) that works across **18 PTM types**. It can be used
+   on its own to predict modification sites, and in this project also produces
+   the per-residue features that condition the PTM dynamics model.
 2. **Dynamics model — pretrain** — an ESM2-conditioned flow-matching backbone
    trained on unmodified MD trajectories (ATLAS + MoDEL).
 3. **Dynamics model — PTM** — the pretrained ESM2 backbone fine-tuned on
@@ -267,10 +268,12 @@ counterfactual (phospho vs. control) comparisons.
 
 ## FluxSite — PTM site prediction
 
-FluxSite is a deep-learning module for predicting PTM sites from protein
-sequence and structure features. It lives in `fluxsite/` and can be used
-independently of the flow-matching backbone. In this project it also serves as
-the feature extractor for the PTM dynamics model (see Data preparation §3).
+FluxSite is a standalone dual-modal deep-learning predictor of PTM sites from
+protein sequence and structure features, covering **18 PTM types** (see below).
+It lives in `fluxsite/` and can be used entirely on its own — independently of
+the flow-matching backbone — as a general-purpose PTM-site predictor. In this
+project it additionally serves as the feature extractor for the PTM dynamics
+model (see Data preparation §3).
 
 ### Supported PTM types
 
