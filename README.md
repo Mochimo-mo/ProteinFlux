@@ -47,6 +47,7 @@ Three phospho PTM types are supported: **SEP** (phosphoserine),
   - [Data format](#data-format)
   - [Training](#training)
   - [Key arguments](#key-arguments-1)
+- [Reference Databases](#reference-databases)
 - [License](#license)
 - [Citation](#citation)
 
@@ -380,6 +381,20 @@ python -m fluxsite.train --config_path configs/fluxsite_default.json \
 | `--early_stopping_patience` | 15 | Epochs without improvement before stopping |
 
 ---
+
+## Reference Databases
+
+ProteinFlux and FluxSite were developed using the public resources below, used
+here in unmodified form. We gratefully acknowledge their authors and refer users
+to each resource's original terms.
+
+- **PDB** (unmodified), by H.M. Berman et al., available free of all copyright restrictions and made fully and freely available for both non-commercial and commercial use under the CC0 1.0 Universal (CC0 1.0) Public Domain Dedication.
+- **ATLAS** (unmodified), by Y. Vander Meersche et al., released under the Creative Commons Attribution-NonCommercial 4.0 International (CC BY-NC 4.0) License — free for non-commercial use with attribution; commercial use by arrangement with the authors.
+- **MoDEL** (unmodified), by T. Meyer et al.; no explicit data license is stated by the resource — trajectories are made freely available for download from the authors' web server (now served via the MDposit / MDDB repository).
+- **dbPTM** (unmodified), by Z. Li, S. Li et al.; no explicit data license is stated — PTM sites are made freely accessible and downloadable in text format from the resource website.
+- **PLMD** (unmodified), by H. Xu et al.; no explicit standard data license (the registry lists the license as "other", open access) — data made freely available for download.
+- **UniProt** (unmodified), by The UniProt Consortium; all copyrightable parts of the databases are made available under the Creative Commons Attribution 4.0 International (CC BY 4.0) License.
+- **AlphaFold Protein Structure Database** (unmodified), by M. Varadi et al. (EMBL-EBI / Google DeepMind), freely available for both academic and commercial use under the Creative Commons Attribution 4.0 International (CC BY 4.0) License.
 
 ## License
 
