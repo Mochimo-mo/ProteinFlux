@@ -79,6 +79,8 @@ class Transport:
         terms = {}
         terms['t'] = t
         terms['pred'] = model_output
+        terms['xt'] = xt
+        terms['x1'] = x1
         if self.model_type == ModelType.VELOCITY:
             terms['loss'] = mean_flat(((model_output - ut) ** 2), mask)
         else:
@@ -151,6 +153,34 @@ class Sampler:
         _ode = ode(drift=drift, t0=t0, t1=t1, sampler_type=sampling_method,
                    num_steps=num_steps, atol=atol, rtol=rtol)
         return _ode.sample
+
+    def sample_sde(self, *, num_steps=100, churn=1.0, eps=1e-3):
+        """Stochastic-interpolant SDE sampling (same marginals as the ODE, noise strength churn):
+            dx = [v(x,t) + 0.5·g(t)^2·score(x,t)] dt + g(t)·dW,  g(t)=churn·σ_t
+        churn=0 reduces to the Euler ODE; g anneals to 0 as t->1 (clean endpoint). Velocity models only.
+        score is recovered from the same velocity forward pass (one model call per step).
+        Return signature matches sample_ode: sample(x, model, **kw) -> stacked tensor, [-1] is the endpoint."""
+        assert self.transport.model_type == ModelType.VELOCITY, "sample_sde supports velocity models only"
+        ps = self.transport.path_sampler
+        t0, t1 = eps, 1.0 - eps
+        grid = th.linspace(t0, t1, num_steps)
+
+        def sample(x, model, **model_kwargs):
+            device = x.device
+            ts = grid.to(device)
+            xs = x
+            for i in range(len(ts) - 1):
+                tb = th.ones(x.size(0), device=device) * ts[i]
+                dt = (ts[i + 1] - ts[i])
+                v = model(xs, tb, **model_kwargs)                       # velocity (the only forward pass)
+                score = ps.get_score_from_velocity(v, xs, tb)
+                sigma_t, _ = ps.compute_sigma_t(paths.expand_t_like_x(tb, xs))
+                g = churn * sigma_t                                     # [B,1,1,1] broadcast
+                drift = v + 0.5 * (g ** 2) * score
+                xs = xs + drift * dt + g * th.sqrt(dt) * th.randn_like(xs)
+            return th.stack([x, xs])                                    # [-1] = endpoint
+
+        return sample
 
 def create_transport(args, path_type='Linear', prediction="velocity",
                      loss_weight=None, train_eps=None, sample_eps=None):

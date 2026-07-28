@@ -205,8 +205,24 @@ def rot_to_quat(
     ]
 
     k = (1./3.) * torch.stack([torch.stack(t, dim=-1) for t in k], dim=-2)
+    k = 0.5 * (k + k.transpose(-1, -2))
 
-    _, vectors = torch.linalg.eigh(k)
+    try:
+        _, vectors = torch.linalg.eigh(k)
+    except RuntimeError as e:
+        # Some CUDA/cuSolver versions fail on large batches of tiny symmetric
+        # matrices even when the same inputs work on CPU. This is most visible
+        # during inference for long proteins, where rot_to_quat is called on a
+        # large [*, 4, 4] batch. Fall back to a CPU double-precision eigensolve
+        # for finite inputs instead of dropping the whole protein.
+        if k.device.type != "cuda" or not torch.isfinite(k).all():
+            raise
+        if "cusolver" not in str(e).lower():
+            raise
+
+        _, vectors_cpu = torch.linalg.eigh(k.double().cpu())
+        vectors = vectors_cpu.to(device=k.device, dtype=k.dtype)
+
     return vectors[..., -1]
 
 

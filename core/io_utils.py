@@ -1,16 +1,36 @@
+import os
+import tempfile
+
 import numpy as np
 from . import protein
 from .geometry import atom14_to_atom37
+from .ptm_utils import map_ptm_to_parent
 
 
 def atom14_to_pdb(atom14, aatype, path):
-    """Write atom14 trajectory to a multi-model PDB file."""
+    """Atomically write an atom14 trajectory as a multi-model PDB."""
+    aatype_geom = map_ptm_to_parent(aatype)
     prots = []
     for i, pos in enumerate(atom14):
-        pos = atom14_to_atom37(pos, aatype)
-        prots.append(create_full_prot(pos, aatype=aatype))
-    with open(path, 'w') as f:
-        f.write(prots_to_pdb(prots))
+        pos = atom14_to_atom37(pos, aatype_geom)
+        prots.append(create_full_prot(pos, aatype=aatype_geom))
+    pdb_text = prots_to_pdb(prots)
+    if "\nATOM " not in pdb_text and not pdb_text.startswith("ATOM "):
+        raise ValueError(f"Refusing to write a PDB without ATOM records: {path}")
+
+    out_dir = os.path.dirname(os.path.abspath(path))
+    os.makedirs(out_dir, exist_ok=True)
+    fd, tmp_path = tempfile.mkstemp(prefix=".pdb_tmp_", suffix=".pdb", dir=out_dir)
+    try:
+        with os.fdopen(fd, "w") as f:
+            f.write(pdb_text)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp_path, path)
+    except Exception:
+        if os.path.exists(tmp_path):
+            os.unlink(tmp_path)
+        raise
 
 
 def create_full_prot(atom37: np.ndarray, aatype=None, b_factors=None):

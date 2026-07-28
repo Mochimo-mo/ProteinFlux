@@ -18,6 +18,7 @@ from core.flow_utils import get_offsets
 from core.io_utils import atom14_to_pdb
 from core.tensor_utils import tensor_tree_map
 from core.geometry import frames_torsions_to_atom14
+from core.ptm_utils import map_ptm_to_parent
 
 try:
     import swanlab
@@ -172,9 +173,38 @@ class Wrapper(pl.LightningModule):
     def configure_optimizers(self):
         cls = torch.optim.AdamW if self.args.adamW else torch.optim.Adam
         optimizer = cls(
-            filter(lambda p: p.requires_grad, self.model.parameters()), lr=self.args.lr,
+            # Use wrapper parameters so optional trainable modules outside
+            # self.model (for example ptm_adapter) are not silently excluded.
+            filter(lambda p: p.requires_grad, self.parameters()), lr=self.args.lr,
         )
-        return optimizer
+
+        warmup_epochs = getattr(self.args, 'warmup_epochs', 0)
+        if warmup_epochs <= 0:
+            return optimizer
+
+        min_lr      = getattr(self.args, 'min_lr', 1e-6)
+        total_epochs = getattr(self.args, 'epochs', 1000)
+
+        warmup = torch.optim.lr_scheduler.LinearLR(
+            optimizer,
+            start_factor=min_lr / self.args.lr,
+            end_factor=1.0,
+            total_iters=warmup_epochs,
+        )
+        cosine = torch.optim.lr_scheduler.CosineAnnealingLR(
+            optimizer,
+            T_max=max(total_epochs - warmup_epochs, 1),
+            eta_min=min_lr,
+        )
+        scheduler = torch.optim.lr_scheduler.SequentialLR(
+            optimizer,
+            schedulers=[warmup, cosine],
+            milestones=[warmup_epochs],
+        )
+        return {
+            "optimizer":    optimizer,
+            "lr_scheduler": {"scheduler": scheduler, "interval": "epoch", "frequency": 1},
+        }
 
 
 class ProteinWrapper(Wrapper):
@@ -186,7 +216,7 @@ class ProteinWrapper(Wrapper):
 
         self.use_ptm_feat = hasattr(args, 'ptm_feat_path') and args.ptm_feat_path is not None
         if self.use_ptm_feat:
-            input_feat_dim = 256
+            input_feat_dim = int(getattr(args, 'ptm_feat_dim', 256))
             target_embed_dim = getattr(args, 'embed_dim', 384)
             self.ptm_adapter = nn.Sequential(
                 nn.Linear(input_feat_dim, target_embed_dim),
@@ -198,6 +228,23 @@ class ProteinWrapper(Wrapper):
 
         self.transport = create_transport(args, args.path_type, args.prediction, None)
         self.transport_sampler = Sampler(self.transport)
+
+        # PTM finetune: freeze backbone, LoRA-adapt attn/FFN, fully train the PTM
+        # channel(s). Gated by --use_lora; base models (flag absent) are unaffected.
+        # Applied before EMA creation so EMA tracks the LoRA/PTM parameters.
+        if getattr(args, 'use_lora', False):
+            from model.lora import apply_lora
+            for p in self.model.parameters():
+                p.requires_grad_(False)
+            apply_lora(self.model, r=args.lora_r, alpha=args.lora_alpha,
+                       dropout=args.lora_dropout)
+            if getattr(self.model, 'use_ptm_channel', False):
+                self.model.ptm_channel.weight.requires_grad_(True)
+            if self.use_ptm_feat and hasattr(self, 'ptm_adapter'):
+                for p in self.ptm_adapter.parameters():
+                    p.requires_grad_(True)
+            n_train = sum(p.numel() for p in self.parameters() if p.requires_grad)
+            print(f"[LoRA] trainable params: {n_train/1e6:.3f}M")
 
         if not hasattr(args, 'ema'):
             args.ema = False
@@ -222,10 +269,15 @@ class ProteinWrapper(Wrapper):
         cond_mask = torch.zeros(B, T, L, dtype=int, device=offsets.device)
         cond_mask[:, 0] = 1
 
+        # Conditioning aatype: use the ablation override when present (geometry
+        # below still uses the real batch['seqres']). For AA-base models this is
+        # how the PTM signal (21/22/23 → aatype_to_emb) gets ablated.
+        cond_aatype = batch.get('aatype_override', batch['seqres'])
+
         model_kwargs = {
             'start_frames': rigids[:, 0],
             'mask': batch['mask'].unsqueeze(1).expand(-1, T, -1),
-            'aatype': batch['seqres'],
+            'aatype': cond_aatype,
             'x_cond': torch.where(cond_mask.unsqueeze(-1).bool(), latents, 0.0),
             'x_cond_mask': cond_mask,
         }
@@ -235,6 +287,8 @@ class ProteinWrapper(Wrapper):
 
         if 'esm2_emb' in batch:
             model_kwargs['esm2_emb'] = batch['esm2_emb'].to(self.device)
+        if 'ptm_ids_override' in batch:
+            model_kwargs['ptm_ids'] = batch['ptm_ids_override'].to(self.device)
 
         return {
             'rigids': rigids,
@@ -263,6 +317,27 @@ class ProteinWrapper(Wrapper):
         self.log('model_dur', time.time() - start)
         loss = out_dict['loss']
         self.log('loss', loss)
+
+        # ── Ensemble-level distribution-matching loss (toggleable) ──────────
+        if getattr(self.args, 'ensemble_loss', False) and stage == 'train':
+            from trainer.ensemble_loss import (
+                predict_x1_from_velocity, ensemble_distribution_loss)
+            x1_hat = predict_x1_from_velocity(
+                self.transport.path_sampler, out_dict['xt'], out_dict['t'], out_dict['pred'])
+            B, T, L, C = x1_hat.shape
+            res_mask = batch['mask'].bool() if 'mask' in batch else None
+            d = ensemble_distribution_loss(
+                x1_hat, out_dict['x1'], res_mask=res_mask,
+                kind=getattr(self.args, 'ensemble_kind', 'energy'),
+                feature=getattr(self.args, 'ensemble_feature', 'per_residue'),
+                t=out_dict['t'], tau_min=getattr(self.args, 'ensemble_tau_min', 0.3))
+            warmup = max(1, getattr(self.args, 'ensemble_warmup', 0))
+            ramp = min(1.0, self.current_epoch / warmup)
+            lam = getattr(self.args, 'ensemble_lambda', 0.1) * ramp
+            loss = loss + lam * d
+            self.log('ens_dist', d)
+            self.log('ens_lambda', lam)
+
         self.log('time', out_dict['t'])
         self.log('dur', time.time() - self.last_log_time)
         if 'name' in batch:
@@ -272,17 +347,19 @@ class ProteinWrapper(Wrapper):
         return loss.mean()
 
     def inference(self, batch):
-        aatype_geom = batch['seqres'].clone()
-        aatype_geom[aatype_geom == 21] = 15
-        aatype_geom[aatype_geom == 22] = 16
-        aatype_geom[aatype_geom == 23] = 19
+        aatype_geom = map_ptm_to_parent(batch['seqres'])
 
         prep = self.prep_batch(batch)
         rigids = prep['rigids']
         B, T, L = rigids.shape
 
         zs = torch.randn(B, T, L, self.latent_dim, device=self.device)
-        sample_fn = self.transport_sampler.sample_ode(sampling_method=self.args.sampling_method)
+        if getattr(self.args, 'sde', False):
+            sample_fn = self.transport_sampler.sample_sde(
+                num_steps=getattr(self.args, 'sde_steps', 100),
+                churn=getattr(self.args, 'churn', 1.0))
+        else:
+            sample_fn = self.transport_sampler.sample_ode(sampling_method=self.args.sampling_method)
         samples = sample_fn(
             zs,
             partial(self.model.forward_inference, **prep['model_kwargs'])

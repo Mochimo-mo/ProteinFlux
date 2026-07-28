@@ -18,11 +18,11 @@ logger = logging.getLogger("protein_encoders")
 
 # Local model file paths.
 ESM_MODEL_PATHS = {
-    "esm2_t33_650M_UR50D": "/teams/YingChiLab_1702378116/JiahuaPeng/PTM_GPT_MoE/all_need/PTM/esm-2/esm2_t33_650M/esm2_t33_650M_UR50D.pt",
-    "esm2_t33_650M_UR50D_alphabet": "/teams/YingChiLab_1702378116/JiahuaPeng/PTM_GPT_MoE/all_need/PTM/esm-2/esm2_t33_650M/esm2_t33_650M_UR50D_alphabet.pt",  # Alphabet file path
-    "esm2_t33_650M_UR50D_contact": "/teams/YingChiLab_1702378116/JiahuaPeng/PTM_GPT_MoE/all_need/PTM/esm-2/esm2_t33_650M/esm2_t33_650M_UR50D-contact-regression.pt",  # Contact regression file path
-    "esm2_t36_3B_UR50D": "/teams/YingChiLab_1702378116/JiahuaPeng/PTM_GPT_MoE/all_need/PTM/esm-2/models/esm2_t36_3B_UR50D.pt",
-    "esm_if1_gvp4_t16_142M_UR50": "/teams/YingChiLab_1702378116/JiahuaPeng/PTM_GPT_MoE/all_need/PTM/esm-2/esm_if1_gvp4_t16_142M_UR50.pt",
+    "esm2_t33_650M_UR50D": "/path/to/esm_weights/esm-2/esm2_t33_650M/esm2_t33_650M_UR50D.pt",
+    "esm2_t33_650M_UR50D_alphabet": "/path/to/esm_weights/esm-2/esm2_t33_650M/esm2_t33_650M_UR50D_alphabet.pt",  # Alphabet file path
+    "esm2_t33_650M_UR50D_contact": "/path/to/esm_weights/esm-2/esm2_t33_650M/esm2_t33_650M_UR50D-contact-regression.pt",  # Contact regression file path
+    "esm2_t36_3B_UR50D": "/path/to/esm_weights/esm-2/models/esm2_t36_3B_UR50D.pt",
+    "esm_if1_gvp4_t16_142M_UR50": "/path/to/esm_weights/esm-2/esm_if1_gvp4_t16_142M_UR50.pt",
 }
 
 class ProteinSequenceEncoder(nn.Module):

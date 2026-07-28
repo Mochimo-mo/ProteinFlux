@@ -6,6 +6,8 @@ h5py
 biopython
 torchdiffeq
 einops
+dm-tree  # imported as `tree` in core/residue_constants.py
+mdtraj   # trajectory analysis in inference/eval (scripts/inference_single.py)
 
 # FluxSite dependencies
 fair-esm

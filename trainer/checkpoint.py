@@ -84,7 +84,7 @@ def perform_embedding_surgery(wrapper):
             print(f"Embedding already at dim {old_dim} — skipping.")
         return wrapper
 
-    IDX_S, IDX_T, IDX_Y = 15, 16, 19
+    IDX_S, IDX_T, IDX_Y = 15, 16, 18
     IDX_SEP, IDX_TPO, IDX_PTR = 21, 22, 23
 
     new_emb = nn.Embedding(24, emb_dim).to(device).to(target_module.weight.dtype)
@@ -129,6 +129,47 @@ def perform_embedding_surgery(wrapper):
 
         wrapper.ema.load_state_dict(old_ema_state)
 
+    return wrapper
+
+
+def warmstart_ptm_tokens(wrapper):
+    """When the aa Embedding is already 24 (e.g. aa_multi base), the PTM rows
+    21/22/23 were never trained (base data has no PTM tokens) → still at init.
+    Warm-start them from their parent residues (S/T/Y = 15/16/18), like the
+    surgery does. Safe for a fresh finetune; do NOT use when resuming a PTM run
+    (it would clobber learned PTM rows). Syncs EMA too.
+    """
+    is_rank0 = (int(os.environ.get("LOCAL_RANK", 0)) == 0)
+    IDX_S, IDX_T, IDX_Y = 15, 16, 18
+    IDX_SEP, IDX_TPO, IDX_PTR = 21, 22, 23
+
+    target_name = None
+    for name, module in wrapper.model.named_modules():
+        if isinstance(module, nn.Embedding) and module.num_embeddings == 24:
+            target_name = name
+            target_module = module
+            break
+    if target_name is None:
+        if is_rank0:
+            print("warmstart_ptm_tokens: no 24-dim aa embedding found — skipping.")
+        return wrapper
+
+    with torch.no_grad():
+        for ptm, parent in ((IDX_SEP, IDX_S), (IDX_TPO, IDX_T), (IDX_PTR, IDX_Y)):
+            target_module.weight[ptm] = target_module.weight[parent]
+    if is_rank0:
+        print(f"warmstart_ptm_tokens: {target_name} rows 21/22/23 ← 15/16/18 (S/T/Y)")
+
+    if getattr(wrapper.args, 'ema', False) and hasattr(wrapper, 'ema'):
+        state = wrapper.ema.state_dict()
+        emb_key = f"{target_name}.weight"
+        if "params" in state and emb_key in state["params"]:
+            t = state["params"][emb_key]
+            for ptm, parent in ((IDX_SEP, IDX_S), (IDX_TPO, IDX_T), (IDX_PTR, IDX_Y)):
+                t[ptm] = t[parent]
+            wrapper.ema.load_state_dict(state)
+            if is_rank0:
+                print(f"warmstart_ptm_tokens: EMA {emb_key} rows warm-started")
     return wrapper
 
 

@@ -81,7 +81,7 @@ from einops import rearrange
 import torch
 
 def batched_gather(data, inds, dim=0, no_batch_dims=0):
-    """多维索引的 batched gather"""
+    """Batched gather with multi-dimensional indices"""
     import torch
     import numpy as np
     
@@ -97,28 +97,28 @@ def batched_gather(data, inds, dim=0, no_batch_dims=0):
     if dim < 0:
         dim = len(data.shape) + dim
     
-    # 展平索引的非批次维度
+    # Flatten the non-batch dimensions of the indices
     original_shape = inds.shape
     inds_flat = inds.flatten(start_dim=no_batch_dims)
     
-    # 为尾部维度添加并扩展
+    # Add and expand for trailing dimensions
     trailing_dims = data.shape[dim + 1:]
     
     if len(trailing_dims) > 0:
-        # 有尾部维度
+        # Has trailing dimensions
         for _ in trailing_dims:
             inds_flat = inds_flat.unsqueeze(-1)
         
-        # 构建扩展形状
+        # Build the expand shape
         expand_shape = list(inds_flat.shape[:-len(trailing_dims)]) + list(trailing_dims)
         inds_flat = inds_flat.expand(expand_shape)
         
-        # Gather 并恢复形状
+        # Gather and restore shape
         result = torch.gather(data, dim, inds_flat)
         result_shape = list(original_shape) + list(trailing_dims)
         result = result.view(result_shape)
     else:
-        # 没有尾部维度
+        # No trailing dimensions
         result = torch.gather(data, dim, inds_flat)
         result = result.view(original_shape)
     

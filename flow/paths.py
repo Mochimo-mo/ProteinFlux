@@ -53,6 +53,18 @@ class ICPlan:
         ut = self.compute_ut(t, x0, x1, xt)
         return t, xt, ut
 
+    def get_score_from_velocity(self, velocity, x, t):
+        """Recover score from velocity (SiT formula, valid for any α_t/σ_t in this class and its subclasses).
+        Used for SDE sampling: dx = [v + 0.5 g^2 score] dt + g dW."""
+        t = expand_t_like_x(t, x)
+        alpha_t, d_alpha_t = self.compute_alpha_t(t)
+        sigma_t, d_sigma_t = self.compute_sigma_t(t)
+        mean = x
+        reverse_alpha_ratio = alpha_t / d_alpha_t
+        var = sigma_t ** 2 - reverse_alpha_ratio * d_sigma_t * sigma_t
+        score = (reverse_alpha_ratio * velocity - mean) / var
+        return score
+
 
 class VPCPlan(ICPlan):
     """Variance-preserving path flow matching"""

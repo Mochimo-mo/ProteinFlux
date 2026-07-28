@@ -7,7 +7,20 @@ import pytorch_lightning as pl
 # PL checkpoints contain argparse.Namespace (from save_hyperparameters),
 # so we must allowlist it before any checkpoint is loaded.
 torch.serialization.add_safe_globals([argparse.Namespace])
-from pytorch_lightning.callbacks import ModelCheckpoint
+from pytorch_lightning.callbacks import ModelCheckpoint, EarlyStopping
+from pytorch_lightning.strategies import DDPStrategy
+
+
+class EarlyStoppingPatched(EarlyStopping):
+    """EarlyStopping that does not restore patience from checkpoint.
+    PL saves patience in state_dict, so --resume would revert patience
+    to the value from the interrupted run. This subclass keeps the
+    patience set at construction time.
+    """
+    def load_state_dict(self, state_dict):
+        saved_patience = self.patience
+        super().load_state_dict(state_dict)
+        self.patience = saved_patience
 
 try:
     from swanlab.integration.pytorch_lightning import SwanLabLogger
@@ -70,7 +83,8 @@ def main():
 
     checkpoint_periodic = ModelCheckpoint(
         dirpath=ckpt_dir,
-        filename='backup_{epoch:02d}',
+        filename='backup-epoch={epoch:03d}-val_loss={val_loss:.4f}',
+        auto_insert_metric_name=False,
         save_top_k=-1,
         every_n_epochs=args.ckpt_freq,
         save_weights_only=False,
@@ -78,10 +92,20 @@ def main():
 
     callbacks = [checkpoint_periodic]
 
+    if getattr(args, 'early_stop_patience', 0) > 0 and not args.no_validate:
+        callbacks.append(EarlyStoppingPatched(
+            monitor='val_loss',
+            patience=args.early_stop_patience,
+            min_delta=getattr(args, 'early_stop_min_delta', 1e-4),
+            mode='min',
+            verbose=True,
+        ))
+
     if not args.no_validate:
         checkpoint_best = ModelCheckpoint(
             dirpath=ckpt_dir,
-            filename='best',
+            filename='best-epoch={epoch:03d}-val_loss={val_loss:.4f}',
+            auto_insert_metric_name=False,
             monitor='val_loss',
             mode='min',
             save_top_k=1,
@@ -91,8 +115,13 @@ def main():
         )
         callbacks.append(checkpoint_best)
 
+    has_esm2 = (getattr(args, 'esm2_emb_path', None) is not None
+                or bool(getattr(args, 'esm_paths', None)))
+    strategy = DDPStrategy(find_unused_parameters=True) if has_esm2 else 'ddp'
+
     trainer = pl.Trainer(
         accelerator="gpu" if torch.cuda.is_available() else 'auto',
+        strategy=strategy,
         max_epochs=args.epochs,
         limit_train_batches=args.train_batches or 1.0,
         limit_val_batches=0.0 if args.no_validate else (args.val_batches or 1.0),
