@@ -1,4 +1,4 @@
-# ProteinFlux-PTM
+# ProteinFlux
 
 SE(3) flow-matching model for generating protein molecular-dynamics (MD)
 conformational ensembles, with support for phosphorylation post-translational
@@ -19,6 +19,8 @@ Three phospho PTM types are supported: **SEP** (phosphoserine),
 **TPO** (phosphothreonine), **PTR** (phosphotyrosine).
 
 📄 For more information, see our paper: [*ProteinFlux: accurate, rapid and scalable generative prediction of protein dynamics driven by post-translational modifications*](https://www.biorxiv.org/content/10.64898/2026.05.06.721822v1) (bioRxiv, 2026).
+
+🗂️ The **DynaMo-phos** benchmark dataset (phosphorylation MD trajectories) is openly available on Zenodo: [zenodo.org/records/20050329](https://zenodo.org/records/20050329).
 
 ## Contents
 
