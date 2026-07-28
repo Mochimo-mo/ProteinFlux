@@ -31,8 +31,8 @@ Three phospho PTM types are supported: **SEP** (phosphoserine),
   - [1. Splits](#1-splits)
   - [2. ESM2 embeddings](#2-esm2-embeddings-for-the-esm2-conditioned-models)
   - [3. FluxSite features](#3-fluxsite-features-for-the-ptm-model-only)
-- [Component 2 — Dynamics model (pretrain, ESM2)](#component-2--dynamics-model-pretrain-esm2)
-- [Component 3 — Dynamics model (PTM, ESM2 + FluxSite)](#component-3--dynamics-model-ptm-esm2--fluxsite)
+- [Training: pretrained dynamics model (ESM2)](#training-pretrained-dynamics-model-esm2)
+- [Training: PTM dynamics model (ESM2 + FluxSite)](#training-ptm-dynamics-model-esm2--fluxsite)
   - [PTM residue encoding](#ptm-residue-encoding)
 - [Inference](#inference)
   - [Pretrained (ESM2) model](#pretrained-esm2-model)
@@ -167,10 +167,13 @@ These features are treated as a precomputed input: extract them from your traine
 FluxSite model (`pho_st_model.pt`, `phos_y_model.pt`) and pass the resulting pkl
 via `--ptm_feat_path` (with `--ptm_feat_dim 256`).
 
-> The FluxSite checkpoints are large and are not included in this release; train
-> them via `fluxsite/` (see below) or obtain them separately.
+> The FluxSite checkpoints (`pho_st_model.pt`, `phos_y_model.pt`, and the other
+> PTM heads) are available on Hugging Face under
+> [`clab-qqt/ProteinFlux/fluxsite/`](https://huggingface.co/clab-qqt/ProteinFlux/tree/main/fluxsite)
+> (see [Pretrained weights](#fluxsite-site-prediction-models)), or train your own
+> via the `fluxsite/` package (see below).
 
-## Component 2 — Dynamics model (pretrain, ESM2)
+## Training: pretrained dynamics model (ESM2)
 
 Multi-dataset ESM2-conditioned training on ATLAS + MoDEL. Edit the path
 variables at the top of the launch script, then run:
@@ -183,7 +186,7 @@ Key settings (see the script header): `--esm2_dim 1280 --esm2_proj_dim 512`,
 `--num_frames 100 --crop 256`, `--prepend_ipa --ema`, mixed sampling via
 `--dataset_weights`.
 
-## Component 3 — Dynamics model (PTM, ESM2 + FluxSite)
+## Training: PTM dynamics model (ESM2 + FluxSite)
 
 Fine-tune the pretrained ESM2 backbone on phosphorylated trajectories. The
 phospho signal enters through both an explicit PTM channel (`--use_ptm_channel`,
