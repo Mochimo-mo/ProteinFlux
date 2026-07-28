@@ -20,6 +20,33 @@ Three phospho PTM types are supported: **SEP** (phosphoserine),
 
 📄 For more information, see our paper: [*ProteinFlux: accurate, rapid and scalable generative prediction of protein dynamics driven by post-translational modifications*](https://www.biorxiv.org/content/10.64898/2026.05.06.721822v1) (bioRxiv, 2026).
 
+## Contents
+
+- [Pretrained weights](#pretrained-weights)
+  - [Dynamics models](#dynamics-models)
+  - [FluxSite site-prediction models](#fluxsite-site-prediction-models)
+- [Project structure](#project-structure)
+- [Installation](#installation)
+- [Data preparation](#data-preparation)
+  - [1. Splits](#1-splits)
+  - [2. ESM2 embeddings](#2-esm2-embeddings-for-the-esm2-conditioned-models)
+  - [3. FluxSite features](#3-fluxsite-features-for-the-ptm-model-only)
+- [Component 2 — Dynamics model (pretrain, ESM2)](#component-2--dynamics-model-pretrain-esm2)
+- [Component 3 — Dynamics model (PTM, ESM2 + FluxSite)](#component-3--dynamics-model-ptm-esm2--fluxsite)
+  - [PTM residue encoding](#ptm-residue-encoding)
+- [Inference](#inference)
+  - [Pretrained (ESM2) model](#pretrained-esm2-model)
+  - [PTM model](#ptm-model)
+  - [Key arguments](#key-arguments)
+- [FluxSite — PTM site prediction](#fluxsite--ptm-site-prediction)
+  - [Supported PTM types](#supported-ptm-types)
+  - [Module structure](#module-structure)
+  - [Data format](#data-format)
+  - [Training](#training)
+  - [Key arguments](#key-arguments-1)
+- [License](#license)
+- [Citation](#citation)
+
 ## Pretrained weights
 
 All checkpoints are hosted on the Hugging Face Hub:
