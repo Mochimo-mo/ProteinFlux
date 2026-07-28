@@ -18,6 +18,8 @@ The release contains three components:
 Three phospho PTM types are supported: **SEP** (phosphoserine),
 **TPO** (phosphothreonine), **PTR** (phosphotyrosine).
 
+📄 For more information, see our paper: [*ProteinFlux: accurate, rapid and scalable generative prediction of protein dynamics driven by post-translational modifications*](https://www.biorxiv.org/content/10.64898/2026.05.06.721822v1) (bioRxiv, 2026).
+
 ## Pretrained weights
 
 All checkpoints are hosted on the Hugging Face Hub:
@@ -349,3 +351,19 @@ python -m fluxsite.train --config_path configs/fluxsite_default.json \
 MIT License. See [LICENSE](LICENSE) for details.
 
 Portions adapted from OpenFold and AlphaFold2 (Apache 2.0), and Hyena / SiT (MIT).
+
+## Citation
+
+If you use ProteinFlux in your research, please cite:
+
+```bibtex
+@article{qian2026proteinflux,
+  title     = {ProteinFlux: accurate, rapid and scalable generative prediction of protein dynamics driven by post-translational modifications},
+  author    = {Qian, Q. and Peng, J. and Ma, D. and Liu, K. and Cheng, Y. and Deng, Y. and Zhao, J. and Su, S. and Yao, Y. and Qu, Y. and Fu, R. and Liu, J. and Zhao, M. and Xiao, Y. and Wang, K. and Wu, Y. and Wang, Y. and Xu, Q. and Wang, J. and Hay, D. C. and Ke, Y. and Wang, Y. and Shipston, M. J. and Chi, Y.},
+  journal   = {bioRxiv},
+  year      = {2026},
+  doi       = {10.64898/2026.05.06.721822},
+  url       = {https://www.biorxiv.org/content/10.64898/2026.05.06.721822v1},
+  publisher = {Cold Spring Harbor Laboratory}
+}
+```
