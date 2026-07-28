@@ -1,0 +1,1875 @@
+#!/usr/bin/env python3
+"""
+Optimized ESM Feature Extraction Script
+
+This script provides high-performance extraction of ESM-2 sequence features and ESM-if structure features
+with support for multi-GPU processing, intelligent caching, and memory optimization.
+
+Usage:
+    python extract_esm_features_optimized.py --fasta_dir data/fasta --pdb_dir data/pdb --output_dir features/
+    python extract_esm_features_optimized.py --mode sequence_only --fasta_dir data/fasta --output_dir features/
+"""
+
+import os
+import sys
+import torch
+import argparse
+import logging
+import json
+import time
+import math
+from pathlib import Path
+from typing import Dict, List, Optional, Tuple, Any, Union
+from dataclasses import dataclass, asdict
+from abc import ABC, abstractmethod
+from concurrent.futures import ProcessPoolExecutor, as_completed
+import multiprocessing as mp
+from tqdm import tqdm
+import numpy as np
+from Bio import SeqIO
+import pickle
+import hashlib
+from contextlib import nullcontext
+from Bio.PDB import PDBParser, Polypeptide
+
+# Standard amino acid mapping
+STANDARD_AMINO_ACIDS = {
+    'ALA': 'A', 'ARG': 'R', 'ASN': 'N', 'ASP': 'D', 'CYS': 'C',
+    'GLN': 'Q', 'GLU': 'E', 'GLY': 'G', 'HIS': 'H', 'ILE': 'I',
+    'LEU': 'L', 'LYS': 'K', 'MET': 'M', 'PHE': 'F', 'PRO': 'P',
+    'SER': 'S', 'THR': 'T', 'TRP': 'W', 'TYR': 'Y', 'VAL': 'V'
+}
+
+# Non-standard to standard amino acid mapping
+NON_STANDARD_SUBSTITUTIONS = {
+    'PTR': 'TYR', 'SEP': 'SER', 'TPO': 'THR', 'MSE': 'MET',
+    'KCX': 'LYS', 'LLP': 'LYS', 'LLY': 'LYS', 'MLY': 'LYS',
+    'M3L': 'LYS', 'OMP': 'ASP', 'GMA': 'GLU', 'HYP': 'PRO',
+    '2AS': 'ASP', '3AH': 'HIS', '5HP': 'GLU', 'ACL': 'ARG',
+    'AGM': 'ARG', 'AIB': 'ALA', 'ALM': 'ALA', 'ALO': 'THR',
+    'ALY': 'LYS', 'ARM': 'ARG', 'ASA': 'ASP', 'ASB': 'ASP',
+    'ASK': 'ASP', 'ASL': 'ASP', 'ASQ': 'ASP', 'AYA': 'ALA',
+    'BCS': 'CYS', 'BMT': 'THR', 'BNN': 'PHE', 'BUC': 'CYS',
+    'BUG': 'LEU', 'C5C': 'CYS', 'C6C': 'CYS', 'CAS': 'CYS',
+    'CCS': 'CYS', 'CEA': 'CYS', 'CGU': 'GLU', 'CHG': 'ALA',
+    'CLE': 'LEU', 'CME': 'CYS', 'CSD': 'ALA', 'CSO': 'CYS',
+    'CSP': 'CYS', 'CSW': 'CYS', 'CSX': 'CYS', 'CXM': 'MET',
+    'CYG': 'CYS', 'CYM': 'CYS', 'CYQ': 'CYS', 'DAH': 'PHE',
+    'DAL': 'ALA', 'DAR': 'ARG', 'DAS': 'ASP', 'DBB': 'THR',
+    'DBL': 'SER', 'DBU': 'THR', 'DBZ': 'PHE', 'DCL': 'GLU',
+    'DGL': 'GLU', 'DGN': 'GLN', 'DHA': 'SER', 'DHI': 'HIS',
+    'DIL': 'ILE', 'DIV': 'VAL', 'DLE': 'LEU', 'DLY': 'LYS',
+    'DNP': 'ALA', 'DPN': 'PHE', 'DPR': 'PRO', 'DSN': 'SER',
+    'DSP': 'ASP', 'DTH': 'THR', 'DTR': 'TRP', 'DTY': 'TYR',
+    'DVA': 'VAL', 'EFC': 'CYS', 'FLA': 'ALA', 'FME': 'MET',
+    'GGL': 'GLU', 'GL3': 'GLY', 'GLZ': 'GLY', 'GMA': 'GLU',
+    'GSC': 'GLY', 'HAC': 'ALA', 'HAR': 'ARG', 'HIC': 'HIS',
+    'HIP': 'HIS', 'HMR': 'ARG', 'HPQ': 'PHE', 'HTR': 'TRP',
+    'HYP': 'PRO', 'IIL': 'ILE', 'IYR': 'TYR', 'KCX': 'LYS',
+    'LLP': 'LYS', 'LLY': 'LYS', 'LTR': 'TRP', 'LYM': 'LYS',
+    'LYZ': 'LYS', 'MAA': 'ALA', 'MEN': 'ASN', 'MHS': 'HIS',
+    'MIS': 'SER', 'MLE': 'LEU', 'MPQ': 'GLY', 'MSA': 'GLY',
+    'MSE': 'MET', 'MVA': 'VAL', 'NEM': 'HIS', 'NEP': 'HIS',
+    'NLE': 'LEU', 'NLN': 'LEU', 'NLP': 'LEU', 'NMC': 'GLY',
+    'OAS': 'SER', 'OCS': 'CYS', 'OEM': 'GLY', 'OTY': 'TYR',
+    'PAQ': 'TYR', 'PCA': 'GLU', 'PEC': 'CYS', 'PHI': 'PHE',
+    'PHL': 'PHE', 'PR3': 'CYS', 'PRR': 'ALA', 'PTR': 'TYR',
+    'PYX': 'CYS', 'SAC': 'SER', 'SAR': 'GLY', 'SCS': 'CYS',
+    'SCY': 'CYS', 'SEL': 'SER', 'SEP': 'SER', 'SET': 'SER',
+    'SHC': 'CYS', 'SHR': 'LYS', 'SMC': 'CYS', 'SOC': 'CYS',
+    'STY': 'TYR', 'SVA': 'SER', 'TIH': 'ALA', 'TPL': 'TRP',
+    'TPO': 'THR', 'TPQ': 'TYR', 'TRG': 'LYS', 'TRO': 'TRP',
+    'TYB': 'TYR', 'TYI': 'TYR', 'TYN': 'TYR', 'TYQ': 'TYR',
+    'TYS': 'TYR', 'TYX': 'TYR', 'VAD': 'VAL', 'VAF': 'VAL',
+    'XAF': 'ALA', 'XPR': 'PRO', 'XYZ': 'ALA',
+}
+
+def robust_load_coords(pdb_path: str, chain_id: Optional[str] = None) -> Tuple[np.ndarray, str]:
+    """
+    Robustly load backbone coordinates (N, CA, C) from a PDB file,
+    handling non-standard amino acids by mapping them to standard ones.
+    """
+    parser = PDBParser(QUIET=True)
+    structure = parser.get_structure('protein', pdb_path)
+    model = structure[0]
+    
+    if chain_id:
+        if chain_id not in model:
+            raise ValueError(f"Chain {chain_id} not found in PDB {pdb_path}")
+        chains = [model[chain_id]]
+    else:
+        chains = list(model.get_chains())
+    
+    all_coords = []
+    all_seq = []
+    
+    for chain in chains:
+        for residue in chain:
+            # Skip water and heteroatoms that are not modified amino acids
+            if residue.id[0] != ' ' and residue.resname not in NON_STANDARD_SUBSTITUTIONS:
+                continue
+            
+            # Map non-standard to standard
+            resname = residue.resname
+            if resname in NON_STANDARD_SUBSTITUTIONS:
+                resname = NON_STANDARD_SUBSTITUTIONS[resname]
+            
+            if resname in STANDARD_AMINO_ACIDS:
+                one_letter = STANDARD_AMINO_ACIDS[resname]
+            else:
+                try:
+                    one_letter = Polypeptide.three_to_one(resname)
+                except (AttributeError, KeyError):
+                    continue
+            
+            # Extract backbone atoms
+            res_coords = []
+            found_all = True
+            for atom_name in ['N', 'CA', 'C']:
+                if atom_name in residue:
+                    res_coords.append(residue[atom_name].get_coord())
+                else:
+                    found_all = False
+                    break
+            
+            if found_all:
+                all_coords.append(res_coords)
+                all_seq.append(one_letter)
+                
+    if not all_coords:
+        raise ValueError(f"No valid residue coordinates found in {pdb_path}")
+        
+    return np.array(all_coords), "".join(all_seq)
+
+# -----------------------------------------------------------------------------
+# Autocast compatibility helper (handles PyTorch >=2.0 new API and older API)
+# -----------------------------------------------------------------------------
+def autocast_ctx(enabled: bool, device: str):
+    """Return an autocast context manager with backward compatibility.
+
+    PyTorch >= 2.0 deprecates torch.cuda.amp.autocast in favor of
+    torch.amp.autocast('cuda', ...). We detect availability and fall back
+    gracefully for older versions to avoid FutureWarning spam.
+    """
+    if not enabled or not device.startswith("cuda"):
+        return nullcontext()
+    # Try new API first
+    try:  # PyTorch >= 2.0
+        return torch.amp.autocast(device_type='cuda')  # type: ignore[attr-defined]
+    except Exception:
+        # Fall back to legacy API
+        return torch.cuda.amp.autocast()
+
+# HDF5 support
+try:
+    import h5py
+    HDF5_AVAILABLE = True
+except ImportError:
+    print("Warning: h5py not found. HDF5 format will not be available. Install with: pip install h5py")
+    HDF5_AVAILABLE = False
+
+# Set multiprocessing start method to 'spawn' for CUDA compatibility
+if __name__ == "__main__":
+    mp.set_start_method('spawn', force=True)
+
+# ESM imports
+try:
+    import esm
+    from esm.pretrained import load_model_and_alphabet_core
+except ImportError:
+    print("ESM not found. Please install: pip install fair-esm")
+    sys.exit(1)
+
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    handlers=[logging.StreamHandler(sys.stdout)]
+)
+logger = logging.getLogger("ESMFeatureExtractor")
+
+
+@dataclass
+class ExtractionConfig:
+    """Configuration for feature extraction."""
+    # Input/Output
+    fasta_dir: str
+    pdb_dir: Optional[str] = None
+    output_dir: str = "features"
+    
+    # Model paths
+    sequence_model_path: str = "esm-2/esm2_t33_650M/esm2_t33_650M_UR50D.pt"
+    structure_model_path: str = "esm-2/esm_if1_gvp4_t16_142M_UR50.pt"
+    
+    # Processing options
+    mode: str = "both"  # "sequence", "structure", "both"
+    batch_size: int = 8
+    max_length: int = 1024
+    num_gpus: int = 4
+    num_workers: int = 4
+    max_tokens_per_batch: Optional[int] = None
+    
+    # Memory optimization
+    use_mixed_precision: bool = True
+    gradient_checkpointing: bool = False
+    max_memory_gb: float = 20.0
+    
+    # Caching
+    use_cache: bool = True
+    cache_dir: str = "cache/features"
+    force_recompute: bool = False
+    
+    # Chunked processing
+    max_proteins_per_chunk: Optional[int] = None
+    max_chunks: Optional[int] = None
+
+    # Output formats
+    save_per_residue: bool = True
+    save_mean_pooled: bool = True
+    save_cls_token: bool = True
+    output_format: str = "hdf5"  # "pickle", "numpy", "hdf5", "both", "all"
+
+    # HDF5 specific options
+    hdf5_compression: str = "gzip"  # "gzip", "lzf", "szip", None
+    hdf5_compression_level: int = 6  # 0-9 for gzip
+    hdf5_shuffle: bool = True  # Enable shuffle filter for better compression
+    hdf5_fletcher32: bool = True  # Enable Fletcher32 checksum
+    hdf5_chunk_size: Optional[int] = None  # Auto-chunking if None
+
+
+@dataclass
+class FeatureResult:
+    """Container for extracted features."""
+    protein_id: str
+    sequence: str
+    sequence_length: int
+    
+    # Sequence features (ESM-2)
+    sequence_features: Optional[np.ndarray] = None  # [L, 1280]
+    sequence_mean: Optional[np.ndarray] = None      # [1280]
+    sequence_cls: Optional[np.ndarray] = None       # [1280]
+    
+    # Structure features (ESM-if)
+    structure_features: Optional[np.ndarray] = None # [L, 512]
+    structure_mean: Optional[np.ndarray] = None     # [512]
+    structure_cls: Optional[np.ndarray] = None      # [512]
+    
+    # Metadata
+    extraction_time: float = 0.0
+    gpu_id: Optional[int] = None
+    error_message: Optional[str] = None
+    
+    def to_dict(self) -> Dict[str, Any]:
+        """Convert to dictionary for serialization."""
+        return asdict(self)
+
+
+class ModelFactory:
+    """Factory for creating ESM models with proper error handling."""
+    
+    @staticmethod
+    def create_sequence_model(model_path: str, gpu_id: int = 0) -> Tuple[torch.nn.Module, Any]:
+        """Create ESM-2 sequence model."""
+        try:
+            logger.info(f"Loading ESM-2 model on GPU {gpu_id}: {model_path}")
+            
+            if os.path.exists(model_path):
+                # Load local model
+                model_data = torch.load(model_path, map_location=f"cuda:{gpu_id}", weights_only=False)
+                model_name = Path(model_path).stem
+                
+                # Try to load regression data
+                regression_data = None
+                regression_path = str(Path(model_path).with_suffix("")) + "-contact-regression.pt"
+                if os.path.exists(regression_path):
+                    try:
+                        regression_data = torch.load(regression_path, map_location=f"cuda:{gpu_id}", weights_only=False)
+                    except Exception as e:
+                        logger.warning(f"Failed to load regression data: {e}")
+                
+                model, alphabet = load_model_and_alphabet_core(model_name, model_data, regression_data)
+            else:
+                # Fallback to pretrained model
+                logger.warning(f"Local model not found: {model_path}, using pretrained")
+                model, alphabet = esm.pretrained.esm2_t33_650M_UR50D()
+            
+            model.eval()
+            if torch.cuda.is_available():
+                model = model.cuda(gpu_id)
+                
+            logger.info(f"ESM-2 model loaded successfully on GPU {gpu_id}")
+            return model, alphabet
+            
+        except Exception as e:
+            logger.error(f"Failed to load ESM-2 model: {e}")
+            raise
+    
+    @staticmethod
+    def create_structure_model(model_path: str, gpu_id: int = 0) -> Tuple[torch.nn.Module, Any]:
+        """Create ESM-if structure model."""
+        try:
+            logger.info(f"Loading ESM-if model on GPU {gpu_id}: {model_path}")
+            
+            if os.path.exists(model_path):
+                # Load local model
+                model_data = torch.load(model_path, map_location=f"cuda:{gpu_id}", weights_only=False)
+                model_name = Path(model_path).stem
+                model, alphabet = load_model_and_alphabet_core(model_name, model_data, None)
+            else:
+                # Fallback to pretrained model
+                logger.warning(f"Local model not found: {model_path}, using pretrained")
+                model, alphabet = esm.pretrained.esm_if1_gvp4_t16_142M_UR50()
+            
+            model.eval()
+            if torch.cuda.is_available():
+                model = model.cuda(gpu_id)
+                
+            logger.info(f"ESM-if model loaded successfully on GPU {gpu_id}")
+            return model, alphabet
+            
+        except Exception as e:
+            logger.error(f"Failed to load ESM-if model: {e}")
+            raise
+
+
+class FeatureExtractor(ABC):
+    """Abstract base class for feature extractors."""
+    
+    def __init__(self, config: ExtractionConfig, gpu_id: int = 0):
+        self.config = config
+        self.gpu_id = gpu_id
+        self.device = f"cuda:{gpu_id}" if torch.cuda.is_available() else "cpu"
+        
+    @abstractmethod
+    def extract_features(self, protein_data: Dict[str, Any]) -> FeatureResult:
+        """Extract features for a single protein."""
+        pass
+    
+    def _setup_memory_optimization(self):
+        """Setup memory optimization settings."""
+        if torch.cuda.is_available():
+            torch.cuda.set_device(self.gpu_id)
+            torch.cuda.empty_cache()
+            
+            if self.config.use_mixed_precision:
+                torch.backends.cudnn.benchmark = True
+
+
+class SequenceFeatureExtractor(FeatureExtractor):
+    """Extractor for ESM-2 sequence features."""
+    
+    def __init__(self, config: ExtractionConfig, gpu_id: int = 0):
+        super().__init__(config, gpu_id)
+        self._setup_memory_optimization()
+        self.model, self.alphabet = ModelFactory.create_sequence_model(
+            config.sequence_model_path, gpu_id
+        )
+        self.batch_converter = self.alphabet.get_batch_converter()
+    
+    @torch.no_grad()
+    def extract_features(self, protein_data: Dict[str, Any]) -> FeatureResult:
+        """Extract sequence features using ESM-2 for a single protein."""
+        batch_results = self.extract_batch([protein_data])
+        return batch_results[0] if batch_results else FeatureResult(
+            protein_id=protein_data['id'],
+            sequence=protein_data['sequence'],
+            sequence_length=len(protein_data['sequence']),
+            extraction_time=0.0,
+            gpu_id=self.gpu_id,
+            error_message="Batch extraction returned no result"
+        )
+
+    @torch.no_grad()
+    def extract_batch(self, protein_batch: List[Dict[str, Any]]) -> List[FeatureResult]:
+        """Extract sequence features for a batch of proteins."""
+        if not protein_batch:
+            return []
+
+        start_time = time.time()
+        data = [(protein['id'], protein['sequence']) for protein in protein_batch]
+        batch_labels, batch_strs, batch_tokens = self.batch_converter(data)
+
+        if torch.cuda.is_available():
+            batch_tokens = batch_tokens.to(self.device)
+
+        use_autocast = self.config.use_mixed_precision and self.device.startswith("cuda")
+
+        try:
+            with autocast_ctx(use_autocast, self.device):
+                results = self.model(
+                    batch_tokens,
+                    repr_layers=[self.model.num_layers],
+                    return_contacts=False
+                )
+
+            token_representations = results["representations"][self.model.num_layers]
+            batch_time = time.time() - start_time
+            per_item_time = batch_time / len(protein_batch)
+
+            batch_results = []
+            for i, (_, sequence) in enumerate(data):
+                seq_len = len(sequence)
+                reps = token_representations[i]
+                sequence_features = reps[1:seq_len + 1].detach().cpu().numpy()
+                sequence_mean = sequence_features.mean(axis=0) if sequence_features.size else None
+                sequence_cls = reps[0].detach().cpu().numpy()
+
+                batch_results.append(
+                    FeatureResult(
+                        protein_id=protein_batch[i]['id'],
+                        sequence=sequence,
+                        sequence_length=seq_len,
+                        sequence_features=sequence_features if self.config.save_per_residue else None,
+                        sequence_mean=sequence_mean if self.config.save_mean_pooled else None,
+                        sequence_cls=sequence_cls if self.config.save_cls_token else None,
+                        extraction_time=per_item_time,
+                        gpu_id=self.gpu_id
+                    )
+                )
+
+            return batch_results
+
+        except Exception as e:
+            logger.error(f"Failed to extract batch sequence features: {e}")
+            batch_time = time.time() - start_time
+            failed_results = []
+            for protein in protein_batch:
+                failed_results.append(
+                    FeatureResult(
+                        protein_id=protein['id'],
+                        sequence=protein['sequence'],
+                        sequence_length=len(protein['sequence']),
+                        extraction_time=batch_time / len(protein_batch) if protein_batch else batch_time,
+                        gpu_id=self.gpu_id,
+                        error_message=str(e)
+                    )
+                )
+            return failed_results
+
+
+class StructureFeatureExtractor(FeatureExtractor):
+    """Extractor for ESM-if structure features."""
+    
+    def __init__(self, config: ExtractionConfig, gpu_id: int = 0):
+        super().__init__(config, gpu_id)
+        self._setup_memory_optimization()
+        self.model, self.alphabet = ModelFactory.create_structure_model(
+            config.structure_model_path, gpu_id
+        )
+        # ESM-if uses a special coordinate batch converter
+        import esm.inverse_folding
+        self.batch_converter = esm.inverse_folding.util.CoordBatchConverter(self.alphabet)
+    
+    def _load_pdb_coordinates(self, pdb_path: str, chain_id: Optional[str] = None) -> Optional[torch.Tensor]:
+        """Load backbone coordinates (N, CA, C) from PDB file using ESM-if utilities."""
+        try:
+            if not os.path.exists(pdb_path):
+                logger.warning(f"PDB file not found: {pdb_path}")
+                return None
+
+            # Use ESM-if's coordinate loading utilities
+            import esm.inverse_folding
+
+            # Load coordinates using ESM-if utilities
+            # This returns coords in shape (L, 3, 3) for N, CA, C atoms
+            try:
+                # Use robust loader to handle non-standard residues like PTR
+                coords, sequence = robust_load_coords(pdb_path, chain_id=chain_id)
+            except Exception as load_error:
+                logger.error(f"Robust load_coords failed for {pdb_path} chain={chain_id}: {load_error}")
+                # Try fallback to standard loader if robust fails
+                try:
+                    import esm.inverse_folding
+                    coords, sequence = esm.inverse_folding.util.load_coords(pdb_path, chain=chain_id)
+                except Exception:
+                    return None
+
+            if coords is None or len(coords) == 0:
+                logger.warning(f"No coordinates found in {pdb_path}")
+                return None
+
+            # Convert to tensor
+            coordinates_tensor = torch.tensor(coords, dtype=torch.float32)
+
+            logger.debug(f"Loaded {len(coords)} residue coordinates from {pdb_path} using ESM-if utilities")
+            logger.debug(f"Coordinate shape: {coordinates_tensor.shape}")
+
+            return coordinates_tensor
+
+        except Exception as e:
+            logger.error(f"Failed to load PDB coordinates from {pdb_path}: {e}")
+            import traceback
+            logger.error(f"Full traceback: {traceback.format_exc()}")
+            return None
+    
+    @torch.no_grad()
+    def extract_features(self, protein_data: Dict[str, Any]) -> FeatureResult:
+        """Extract structure features using ESM-if."""
+        start_time = time.time()
+        
+        protein_id = protein_data['id']
+        sequence = protein_data['sequence']
+        pdb_path = protein_data.get('pdb_path')
+        chain_id = protein_data.get('chain_id')
+        
+        try:
+            if not pdb_path or not os.path.exists(pdb_path):
+                raise ValueError(f"PDB file not found: {pdb_path}")
+            
+            # Load structure coordinates
+            coordinates = self._load_pdb_coordinates(pdb_path, chain_id=chain_id)
+            if coordinates is None:
+                raise ValueError("Failed to load structure coordinates")
+            
+            # Prepare data for ESM-if using the coordinate batch converter
+            # Format: [(coords, confidence, seq)]
+            # Convert tensor to numpy if needed
+            if isinstance(coordinates, torch.Tensor):
+                coords_numpy = coordinates.cpu().numpy()
+            else:
+                coords_numpy = coordinates
+
+            batch_data = [(coords_numpy, None, sequence)]
+            device = next(self.model.parameters()).device
+            coords, confidence, strs, tokens, padding_mask = self.batch_converter(
+                batch_data, device=device
+            )
+
+            # Extract features using ESM-if
+            use_autocast = self.config.use_mixed_precision and self.device.startswith("cuda")
+
+            with autocast_ctx(use_autocast, self.device):
+                # ESM-if encoder forward pass
+                encoder_out = self.model.encoder.forward(
+                    coords, padding_mask, confidence, return_all_hiddens=False
+                )
+
+                # Get encoder output (remove bos and eos tokens)
+                token_representations = encoder_out['encoder_out'][0][1:-1, 0]
+            
+            # Process results
+            seq_len = len(sequence)
+            structure_features = token_representations[:seq_len].cpu().numpy()
+
+            # Compute pooled representations
+            structure_mean = structure_features.mean(axis=0)
+
+            # For CLS token, use the first token from encoder output
+            structure_cls = encoder_out['encoder_out'][0][0, 0].cpu().numpy()
+            
+            extraction_time = time.time() - start_time
+            
+            return FeatureResult(
+                protein_id=protein_id,
+                sequence=sequence,
+                sequence_length=seq_len,
+                structure_features=structure_features if self.config.save_per_residue else None,
+                structure_mean=structure_mean if self.config.save_mean_pooled else None,
+                structure_cls=structure_cls if self.config.save_cls_token else None,
+                extraction_time=extraction_time,
+                gpu_id=self.gpu_id
+            )
+            
+        except Exception as e:
+            logger.error(f"Failed to extract structure features for {protein_id}: {e}")
+            return FeatureResult(
+                protein_id=protein_id,
+                sequence=sequence,
+                sequence_length=len(sequence),
+                extraction_time=time.time() - start_time,
+                gpu_id=self.gpu_id,
+                error_message=str(e)
+            )
+
+
+class CombinedFeatureExtractor(FeatureExtractor):
+    """Extractor for both sequence and structure features."""
+    
+    def __init__(self, config: ExtractionConfig, gpu_id: int = 0):
+        super().__init__(config, gpu_id)
+        self.sequence_extractor = SequenceFeatureExtractor(config, gpu_id)
+        self.structure_extractor = StructureFeatureExtractor(config, gpu_id)
+    
+    def extract_features(self, protein_data: Dict[str, Any]) -> FeatureResult:
+        """Extract both sequence and structure features."""
+        # Extract sequence features
+        seq_result = self.sequence_extractor.extract_features(protein_data)
+
+        # Extract structure features if PDB file is available
+        if protein_data.get('pdb_path'):
+            try:
+                struct_result = self.structure_extractor.extract_features(protein_data)
+
+                # Combine results
+                combined_result = FeatureResult(
+                    protein_id=seq_result.protein_id,
+                    sequence=seq_result.sequence,
+                    sequence_length=seq_result.sequence_length,
+                    # Sequence features
+                    sequence_features=seq_result.sequence_features,
+                    sequence_mean=seq_result.sequence_mean,
+                    sequence_cls=seq_result.sequence_cls,
+                    # Structure features
+                    structure_features=struct_result.structure_features,
+                    structure_mean=struct_result.structure_mean,
+                    structure_cls=struct_result.structure_cls,
+                    # Timing and metadata
+                    extraction_time=seq_result.extraction_time + struct_result.extraction_time,
+                    gpu_id=seq_result.gpu_id
+                )
+
+                logger.debug(f"Successfully extracted both sequence and structure features for {seq_result.protein_id}")
+                return combined_result
+
+            except Exception as e:
+                logger.error(f"Structure feature extraction failed for {seq_result.protein_id}: {e}")
+                import traceback
+                logger.error(f"Full traceback: {traceback.format_exc()}")
+                # Return sequence features only if structure extraction fails
+                return seq_result
+        else:
+            logger.debug(f"No PDB file available for {seq_result.protein_id}, returning sequence features only")
+            return seq_result
+
+
+class FeatureCache:
+    """Intelligent caching system for extracted features."""
+    
+    def __init__(self, cache_dir: str):
+        self.cache_dir = Path(cache_dir)
+        self.cache_dir.mkdir(parents=True, exist_ok=True)
+        self.index_file = self.cache_dir / "cache_index.json"
+        self.index = self._load_index()
+        # Lock file path for multi-process safe writes
+        self._lock_file = self.cache_dir / ".cache_index.lock"
+        # Detect if fcntl is available (POSIX systems)
+        try:
+            import fcntl  # noqa: F401
+            self._have_fcntl = True
+        except Exception:
+            self._have_fcntl = False
+    
+    def _load_index(self) -> Dict[str, Dict[str, Any]]:
+        """Load cache index."""
+        if not self.index_file.exists():
+            return {}
+        try:
+            # If file is empty, treat as new
+            if self.index_file.stat().st_size == 0:
+                return {}
+            with open(self.index_file, 'r') as f:
+                content = f.read().strip()
+                if not content:
+                    return {}
+                return json.loads(content)
+        except json.JSONDecodeError as e:
+            # Corrupted file -> back it up and start fresh
+            timestamp = int(time.time())
+            backup_file = self.index_file.with_suffix(f".corrupt.{timestamp}.bak")
+            try:
+                self.index_file.rename(backup_file)
+                logger.warning(f"Cache index corrupted (JSONDecodeError). Backed up to {backup_file}. Starting with empty index.")
+            except Exception as move_err:
+                logger.warning(f"Failed to backup corrupted cache index: {move_err}")
+            return {}
+        except Exception as e:
+            logger.warning(f"Failed to load cache index: {e}")
+            return {}
+    
+    def _save_index(self):
+        """Save cache index."""
+        tmp_file_path: Optional[Path] = None
+        lock_fh = None
+        try:
+            # Ensure cache directory exists in every worker process (spawned processes may not inherit it)
+            self.cache_dir.mkdir(parents=True, exist_ok=True)
+
+            if self._have_fcntl:
+                import fcntl
+                lock_fh = open(self._lock_file, 'w')
+                try:
+                    fcntl.flock(lock_fh.fileno(), fcntl.LOCK_EX)
+                except Exception as lock_err:
+                    logger.debug(
+                        f"Failed to acquire cache index lock (continuing without strict locking): {lock_err}"
+                    )
+
+            # Use a unique temp file name to avoid collisions between processes
+            tmp_file_path = self.cache_dir / f"cache_index.{os.getpid()}.{time.time_ns()}.tmp"
+
+            with open(tmp_file_path, 'w') as f:
+                json.dump(self.index, f, indent=2)
+                f.flush()
+                os.fsync(f.fileno())
+
+            os.replace(tmp_file_path, self.index_file)
+        except Exception as e:
+            logger.error(f"Failed to save cache index: {e}")
+            if tmp_file_path and tmp_file_path.exists():
+                try:
+                    tmp_file_path.unlink()
+                except Exception:
+                    pass
+        finally:
+            if tmp_file_path and tmp_file_path.exists():
+                try:
+                    tmp_file_path.unlink()
+                except Exception:
+                    pass
+
+            if lock_fh:
+                try:
+                    if self._have_fcntl:
+                        import fcntl
+                        fcntl.flock(lock_fh.fileno(), fcntl.LOCK_UN)
+                except Exception:
+                    pass
+                try:
+                    lock_fh.close()
+                except Exception:
+                    pass
+
+    def _compute_hash(self, protein_data: Dict[str, Any], config: ExtractionConfig) -> str:
+        """Compute hash for cache key."""
+        key_data = {
+            'sequence': protein_data['sequence'],
+            'mode': config.mode,
+            'model_paths': {
+                'sequence': config.sequence_model_path,
+                'structure': config.structure_model_path
+            }
+        }
+
+        if protein_data.get('pdb_path'):
+            # Include PDB file modification time
+            pdb_path = Path(protein_data['pdb_path'])
+            if pdb_path.exists():
+                key_data['pdb_mtime'] = pdb_path.stat().st_mtime
+
+        key_str = json.dumps(key_data, sort_keys=True)
+        return hashlib.md5(key_str.encode()).hexdigest()
+
+    def get(self, protein_data: Dict[str, Any], config: ExtractionConfig) -> Optional[FeatureResult]:
+        """Get cached features if available."""
+        if not config.use_cache:
+            return None
+
+        protein_id = protein_data['id']
+        cache_key = self._compute_hash(protein_data, config)
+
+        if protein_id in self.index and self.index[protein_id].get('hash') == cache_key:
+            cache_file = self.cache_dir / f"{protein_id}.pkl"
+            if cache_file.exists():
+                try:
+                    with open(cache_file, 'rb') as f:
+                        result = pickle.load(f)
+                    logger.debug(f"Cache hit for {protein_id}")
+                    return result
+                except Exception as e:
+                    logger.warning(f"Failed to load cached features for {protein_id}: {e}")
+
+        return None
+
+    def put(self, result: FeatureResult, protein_data: Dict[str, Any], config: ExtractionConfig):
+        """Cache extracted features."""
+        if not config.use_cache or result.error_message:
+            return
+
+        protein_id = result.protein_id
+        cache_key = self._compute_hash(protein_data, config)
+
+        try:
+            cache_file = self.cache_dir / f"{protein_id}.pkl"
+            with open(cache_file, 'wb') as f:
+                pickle.dump(result, f)
+
+            self.index[protein_id] = {
+                'hash': cache_key,
+                'timestamp': time.time(),
+                'file': str(cache_file)
+            }
+            self._save_index()
+
+            logger.debug(f"Cached features for {protein_id}")
+
+        except Exception as e:
+            logger.error(f"Failed to cache features for {protein_id}: {e}")
+
+
+class ExtractionSummaryTracker:
+    """Incrementally tracks extraction metrics without storing all results."""
+
+    def __init__(self):
+        self.total_proteins = 0
+        self.successful = 0
+        self.failed = 0
+        self.total_time = 0.0
+        self.success_time_accumulator = 0.0
+        self.min_extraction_time: Optional[float] = None
+        self.max_extraction_time: Optional[float] = None
+        self.error_samples: List[Dict[str, str]] = []
+        self._max_error_samples = 200  # Prevent runaway summary sizes
+
+    def update_from_results(self, results: List[FeatureResult]):
+        for result in results:
+            self.total_proteins += 1
+            self.total_time += result.extraction_time
+
+            if result.error_message:
+                self.failed += 1
+                if len(self.error_samples) < self._max_error_samples:
+                    self.error_samples.append({
+                        "protein_id": result.protein_id,
+                        "error": result.error_message
+                    })
+            else:
+                self.successful += 1
+                self.success_time_accumulator += result.extraction_time
+                if self.min_extraction_time is None or result.extraction_time < self.min_extraction_time:
+                    self.min_extraction_time = result.extraction_time
+                if self.max_extraction_time is None or result.extraction_time > self.max_extraction_time:
+                    self.max_extraction_time = result.extraction_time
+
+    def merge(self, other: "ExtractionSummaryTracker"):
+        self.total_proteins += other.total_proteins
+        self.successful += other.successful
+        self.failed += other.failed
+        self.total_time += other.total_time
+        self.success_time_accumulator += other.success_time_accumulator
+
+        if other.min_extraction_time is not None:
+            if self.min_extraction_time is None or other.min_extraction_time < self.min_extraction_time:
+                self.min_extraction_time = other.min_extraction_time
+        if other.max_extraction_time is not None:
+            if self.max_extraction_time is None or other.max_extraction_time > self.max_extraction_time:
+                self.max_extraction_time = other.max_extraction_time
+
+        for sample in other.error_samples:
+            if len(self.error_samples) < self._max_error_samples:
+                self.error_samples.append(sample)
+            else:
+                break
+
+    def to_summary_dict(self, total_duration: float, config: ExtractionConfig) -> Dict[str, Any]:
+        average_time_per_protein = self.total_time / self.total_proteins if self.total_proteins else 0.0
+        mean_extraction_time = (
+            self.success_time_accumulator / self.successful
+            if self.successful else 0.0
+        )
+
+        summary = {
+            "total_proteins": self.total_proteins,
+            "successful": self.successful,
+            "failed": self.failed,
+            "success_rate": self.successful / self.total_proteins if self.total_proteins else 0.0,
+            "total_time_seconds": total_duration,
+            "average_time_per_protein": average_time_per_protein,
+            "mean_extraction_time": mean_extraction_time,
+            "min_extraction_time": self.min_extraction_time,
+            "max_extraction_time": self.max_extraction_time,
+            "config": asdict(config),
+        }
+
+        if self.error_samples:
+            summary["sample_errors"] = self.error_samples
+
+        return summary
+
+
+class HDF5FeatureAggregator:
+    """Aggregates features from multiple chunks into a single HDF5 file."""
+
+    def __init__(self, output_path: Path, config: ExtractionConfig):
+        if not HDF5_AVAILABLE:
+            raise ImportError("h5py is required for HDF5 aggregation")
+
+        self.output_path = Path(output_path)
+        self.config = config
+        self.output_path.parent.mkdir(parents=True, exist_ok=True)
+
+        import h5py  # Local import to avoid NameError when h5py is absent
+
+        self._h5py = h5py
+        self._file = self._h5py.File(self.output_path, 'w')
+        self._metadata_group = self._file.create_group('metadata')
+        self._proteins_group = self._file.create_group('proteins')
+
+        self._compression_opts = {}
+        if self.config.hdf5_compression:
+            self._compression_opts['compression'] = self.config.hdf5_compression
+            if self.config.hdf5_compression == 'gzip':
+                self._compression_opts['compression_opts'] = self.config.hdf5_compression_level
+            self._compression_opts['shuffle'] = self.config.hdf5_shuffle
+            self._compression_opts['fletcher32'] = self.config.hdf5_fletcher32
+
+        self.sequence_only = 0
+        self.structure_only = 0
+        self.both = 0
+        self.successful = 0
+
+    def append_results(self, results: List[FeatureResult]):
+        for result in results:
+            if result.error_message:
+                continue
+
+            protein_id = result.protein_id
+            if protein_id in self._proteins_group:
+                logger.warning(f"Duplicate protein ID encountered in aggregation: {protein_id}, skipping")
+                continue
+
+            protein_group = self._proteins_group.create_group(protein_id)
+
+            protein_group.attrs['protein_id'] = protein_id.encode('utf-8')
+            protein_group.attrs['sequence'] = result.sequence.encode('utf-8')
+            protein_group.attrs['sequence_length'] = result.sequence_length
+
+            has_sequence = result.sequence_mean is not None or result.sequence_features is not None or result.sequence_cls is not None
+            has_structure = result.structure_mean is not None or result.structure_features is not None or result.structure_cls is not None
+
+            protein_group.attrs['has_sequence'] = bool(has_sequence)
+            protein_group.attrs['has_structure'] = bool(has_structure)
+
+            if has_sequence and has_structure:
+                self.both += 1
+            elif has_sequence:
+                self.sequence_only += 1
+            elif has_structure:
+                self.structure_only += 1
+
+            # Save sequence features
+            if result.sequence_mean is not None and self.config.save_mean_pooled:
+                protein_group.create_dataset('sequence_mean', data=result.sequence_mean, **self._compression_opts)
+
+            if result.sequence_cls is not None and self.config.save_cls_token:
+                protein_group.create_dataset('sequence_cls', data=result.sequence_cls, **self._compression_opts)
+
+            if result.sequence_features is not None and self.config.save_per_residue:
+                protein_group.create_dataset('sequence_features', data=result.sequence_features, **self._compression_opts)
+
+            # Save structure features
+            if result.structure_mean is not None and self.config.save_mean_pooled:
+                protein_group.create_dataset('structure_mean', data=result.structure_mean, **self._compression_opts)
+
+            if result.structure_cls is not None and self.config.save_cls_token:
+                protein_group.create_dataset('structure_cls', data=result.structure_cls, **self._compression_opts)
+
+            if result.structure_features is not None and self.config.save_per_residue:
+                protein_group.create_dataset('structure_features', data=result.structure_features, **self._compression_opts)
+
+            self.successful += 1
+
+            # Release large arrays from memory explicitly
+            result.sequence_features = None
+            result.structure_features = None
+
+    def finalize(self, total_proteins: int, creation_time: float, mode: str):
+        self._metadata_group.attrs['total_proteins'] = total_proteins
+        self._metadata_group.attrs['sequence_feature_dim'] = 1280  # ESM-2 dimension
+        self._metadata_group.attrs['structure_feature_dim'] = 512   # ESM-if dimension
+        self._metadata_group.attrs['sequence_only'] = self.sequence_only
+        self._metadata_group.attrs['structure_only'] = self.structure_only
+        self._metadata_group.attrs['both'] = self.both
+        self._metadata_group.attrs['successful'] = self.successful
+        self._metadata_group.attrs['creation_time'] = creation_time
+        self._metadata_group.attrs['script_version'] = '1.1-chunked'
+        self._metadata_group.attrs['extraction_mode'] = mode
+
+    def close(self):
+        if self._file:
+            self._file.close()
+            self._file = None
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        self.close()
+
+
+class DataLoader:
+    """Efficient data loader for protein sequences and structures."""
+    
+    def __init__(self, config: ExtractionConfig):
+        self.config = config
+    
+    def load_protein_data(self) -> List[Dict[str, Any]]:
+        """Load protein sequences and structure paths."""
+        protein_data = []
+        
+        # Load FASTA files
+        fasta_dir = Path(self.config.fasta_dir)
+        if not fasta_dir.exists():
+            raise FileNotFoundError(f"FASTA directory not found: {fasta_dir}")
+        
+        fasta_files = list(fasta_dir.glob("*.fasta")) + list(fasta_dir.glob("*.fa"))
+        if not fasta_files:
+            raise ValueError(f"No FASTA files found in {fasta_dir}")
+        
+        logger.info(f"Loading sequences from {len(fasta_files)} FASTA files")
+        
+        for fasta_file in tqdm(fasta_files, desc="Loading FASTA files"):
+            try:
+                for record in SeqIO.parse(str(fasta_file), "fasta"):
+                    sequence = str(record.seq)
+                    
+                    # Skip sequences that are too long
+                    if len(sequence) > self.config.max_length:
+                        logger.warning(f"Skipping {record.id}: sequence too long ({len(sequence)} > {self.config.max_length})")
+                        continue
+                    
+                    # Extract protein ID from the header (handle UniProt format)
+                    protein_id = record.id
+                    if protein_id.startswith('sp|') or protein_id.startswith('tr|'):
+                        # UniProt format: sp|A2A8Z1|OSBL9_MOUSE -> A2A8Z1
+                        protein_id = protein_id.split('|')[1]
+                    
+                    protein_info = {
+                        'id': protein_id,
+                        'sequence': sequence,
+                        'fasta_file': str(fasta_file)
+                    }
+                    
+                    # Add PDB path if structure mode enabled
+                    if self.config.mode in ['structure', 'both'] and self.config.pdb_dir:
+                        pdb_dir = Path(self.config.pdb_dir)
+                        pdb_path = pdb_dir / f"{protein_id}.pdb"
+                        
+                        # Support for multi-chain mapping: if protein_id is PDBID_CHAIN (e.g., 1AUV_A)
+                        # but we only have PDBID.pdb, use that and record the chain.
+                        chain_id = None
+                        if not pdb_path.exists() and "_" in protein_id:
+                            base_id, chain = protein_id.split('_', 1)
+                            alt_pdb_path = pdb_dir / f"{base_id}.pdb"
+                            if alt_pdb_path.exists():
+                                pdb_path = alt_pdb_path
+                                chain_id = chain
+                                logger.debug(f"Mapped {protein_id} to PDB {pdb_path} chain {chain_id}")
+                        
+                        if pdb_path.exists():
+                            protein_info['pdb_path'] = str(pdb_path)
+                            if chain_id:
+                                protein_info['chain_id'] = chain_id
+                        elif self.config.mode == 'structure':
+                            # Skip if structure required but not available
+                            logger.warning(f"Skipping {protein_id}: PDB file not found in {pdb_dir}")
+                            continue
+                    
+                    protein_data.append(protein_info)
+                    
+            except Exception as e:
+                logger.error(f"Failed to load {fasta_file}: {e}")
+        
+        logger.info(f"Loaded {len(protein_data)} proteins")
+        return protein_data
+
+
+def process_protein_batch(gpu_id: int, protein_batch: List[Dict[str, Any]], 
+                         config: ExtractionConfig) -> List[FeatureResult]:
+    """Process a batch of proteins on a specific GPU."""
+    try:
+        # Set GPU device
+        if torch.cuda.is_available():
+            torch.cuda.set_device(gpu_id)
+        
+        # Create appropriate extractor
+        if config.mode == 'sequence':
+            extractor = SequenceFeatureExtractor(config, gpu_id)
+        elif config.mode == 'structure':
+            extractor = StructureFeatureExtractor(config, gpu_id)
+        else:  # both
+            extractor = CombinedFeatureExtractor(config, gpu_id)
+        
+        # Setup caching
+        cache = FeatureCache(config.cache_dir) if config.use_cache else None
+        
+        results = []
+        for protein_data in protein_batch:
+            # Check cache first
+            if cache and not config.force_recompute:
+                cached_result = cache.get(protein_data, config)
+                if cached_result:
+                    results.append(cached_result)
+                    continue
+            
+            # Extract features
+            try:
+                result = extractor.extract_features(protein_data)
+                results.append(result)
+                
+                # Cache result
+                if cache:
+                    cache.put(result, protein_data, config)
+            except Exception as e:
+                logger.error(f"Error processing protein {protein_data['id']}: {e}")
+                # Try to recover memory
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+            
+            # Aggressive cleanup to prevent OOM accumulation
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+        
+        return results
+        
+    except Exception as e:
+        logger.error(f"GPU {gpu_id} processing failed: {e}")
+        return []
+
+
+class FeatureExtractionPipeline:
+    """Main pipeline for feature extraction."""
+    
+    def __init__(self, config: ExtractionConfig):
+        self.config = config
+        self.data_loader = DataLoader(config)
+        
+        # Validate configuration
+        self._validate_config()
+    
+    def _validate_config(self):
+        """Validate configuration."""
+        if not os.path.exists(self.config.fasta_dir):
+            raise FileNotFoundError(f"FASTA directory not found: {self.config.fasta_dir}")
+        
+        if self.config.mode in ['structure', 'both']:
+            if not self.config.pdb_dir or not os.path.exists(self.config.pdb_dir):
+                logger.warning("PDB directory not found, switching to sequence-only mode")
+                self.config.mode = 'sequence'
+        
+        if torch.cuda.is_available():
+            available_gpus = torch.cuda.device_count()
+            if self.config.num_gpus > available_gpus:
+                logger.warning(f"Requested {self.config.num_gpus} GPUs, but only {available_gpus} available")
+                self.config.num_gpus = available_gpus
+        else:
+            logger.warning("CUDA not available, using CPU")
+            self.config.num_gpus = 1
+    
+    def _should_write_hdf5(self) -> bool:
+        return self.config.output_format in ["hdf5", "all"]
+
+    def _generate_chunks(
+        self,
+        protein_data: List[Dict[str, Any]],
+        max_per_chunk: int,
+        max_chunks: Optional[int]
+    ) -> List[List[Dict[str, Any]]]:
+        chunks: List[List[Dict[str, Any]]] = []
+        total = len(protein_data)
+        truncated = False
+
+        if max_per_chunk <= 0:
+            return [protein_data]
+
+        chunk_count = 0
+        for start in range(0, total, max_per_chunk):
+            if max_chunks is not None and chunk_count >= max_chunks:
+                truncated = True
+                break
+            end = min(start + max_per_chunk, total)
+            chunks.append(protein_data[start:end])
+            chunk_count += 1
+
+        if truncated:
+            processed = sum(len(chunk) for chunk in chunks)
+            remaining = max(total - processed, 0)
+            logger.warning(
+                f"Chunking limited to {chunk_count} chunk(s); skipping {remaining} remaining proteins"
+            )
+
+        return chunks or [protein_data]
+
+    def _split_for_gpus(self, protein_subset: List[Dict[str, Any]]) -> Tuple[List[List[Dict[str, Any]]], int]:
+        if not protein_subset:
+            return [], 0
+
+        if torch.cuda.is_available():
+            effective_gpus = min(self.config.num_gpus, len(protein_subset))
+        else:
+            effective_gpus = 1
+
+        effective_gpus = max(1, effective_gpus)
+        batch_size = math.ceil(len(protein_subset) / effective_gpus)
+        batches = [
+            protein_subset[i:i + batch_size]
+            for i in range(0, len(protein_subset), batch_size)
+        ]
+        # Ensure we have exactly effective_gpus batches by merging leftovers if needed
+        while len(batches) > effective_gpus:
+            batches[-2].extend(batches[-1])
+            batches.pop()
+
+        return batches, effective_gpus
+
+    def _process_chunk(
+        self,
+        protein_subset: List[Dict[str, Any]],
+        chunk_output_dir: Path,
+        aggregator: Optional[HDF5FeatureAggregator],
+        global_summary: ExtractionSummaryTracker,
+        chunk_index: int
+    ):
+        if not protein_subset:
+            logger.warning(f"Chunk {chunk_index} is empty; skipping")
+            return
+
+        chunk_start = time.time()
+        protein_batches, effective_gpus = self._split_for_gpus(protein_subset)
+
+        logger.info(
+            f"Chunk {chunk_index}: processing {len(protein_subset)} proteins "
+            f"across {effective_gpus} GPU(s)"
+        )
+
+        chunk_summary = ExtractionSummaryTracker()
+        collected_results: Optional[List[FeatureResult]] = [] if aggregator is None else None
+
+        if effective_gpus > 1 and torch.cuda.is_available():
+            with ProcessPoolExecutor(max_workers=effective_gpus) as executor:
+                futures = [
+                    executor.submit(process_protein_batch, gpu_id, batch, self.config)
+                    for gpu_id, batch in enumerate(protein_batches)
+                ]
+
+                for future in tqdm(as_completed(futures), total=len(futures), desc=f"Chunk {chunk_index} batches"):
+                    try:
+                        batch_results = future.result()
+                        chunk_summary.update_from_results(batch_results)
+                        if aggregator:
+                            aggregator.append_results(batch_results)
+                        elif collected_results is not None:
+                            collected_results.extend(batch_results)
+                    except Exception as e:
+                        error_str = str(e)
+                        error_type = str(type(e))
+                        if "BrokenProcessPool" in error_type or "terminated abruptly" in error_str:
+                            logger.error("\n" + "!"*80)
+                            logger.error("CRITICAL ERROR: Worker process crashed (BrokenProcessPool).")
+                            logger.error("This is usually caused by running out of GPU memory (OOM) when processing long sequences.")
+                            logger.error(f"Current batch_size: {self.config.batch_size}")
+                            logger.error("SUGGESTION: Try reducing --max_length (e.g., --max_length 1024) or use a smaller batch size.")
+                            logger.error("!"*80 + "\n")
+                        raise e
+        else:
+            for batch in tqdm(protein_batches, desc=f"Chunk {chunk_index} batches"):
+                batch_results = process_protein_batch(0, batch, self.config)
+                chunk_summary.update_from_results(batch_results)
+                if aggregator:
+                    aggregator.append_results(batch_results)
+                elif collected_results is not None:
+                    collected_results.extend(batch_results)
+
+        chunk_duration = time.time() - chunk_start
+        global_summary.merge(chunk_summary)
+
+        chunk_summary_dict = chunk_summary.to_summary_dict(chunk_duration, self.config)
+        chunk_summary_dict["chunk_index"] = chunk_index
+        chunk_summary_dict["proteins_in_chunk"] = len(protein_subset)
+        chunk_summary_path = chunk_output_dir / "chunk_summary.json"
+        try:
+            with open(chunk_summary_path, 'w') as f:
+                json.dump(chunk_summary_dict, f, indent=2, default=str)
+        except Exception as e:
+            logger.error(f"Failed to save chunk summary for chunk {chunk_index}: {e}")
+
+        if aggregator is None and collected_results is not None:
+            self._save_results(collected_results, chunk_output_dir)
+            logger.info(
+                f"Chunk {chunk_index}: saved results to {chunk_output_dir}"
+            )
+        elif aggregator is not None:
+            logger.info(
+                f"Chunk {chunk_index}: appended {chunk_summary.successful} proteins to aggregated HDF5"
+            )
+
+    def run(self) -> Dict[str, Any]:
+        """Run the feature extraction pipeline."""
+        start_time = time.time()
+
+        protein_data = self.data_loader.load_protein_data()
+        if not protein_data:
+            raise ValueError("No protein data loaded")
+
+        output_dir = Path(self.config.output_dir)
+        output_dir.mkdir(parents=True, exist_ok=True)
+
+        use_chunking = (
+            self.config.max_proteins_per_chunk is not None and
+            self.config.max_proteins_per_chunk > 0
+        )
+        summary_tracker = ExtractionSummaryTracker()
+        chunks_processed = 0
+
+        aggregator: Optional[HDF5FeatureAggregator] = None
+        aggregated_hdf5_path: Optional[Path] = None
+        should_create_hdf5 = self._should_write_hdf5()
+
+        if use_chunking and should_create_hdf5:
+            aggregated_hdf5_path = output_dir / "esm_features.h5"
+            aggregator = HDF5FeatureAggregator(aggregated_hdf5_path, self.config)
+
+        try:
+            if use_chunking:
+                chunks = self._generate_chunks(
+                    protein_data,
+                    self.config.max_proteins_per_chunk,
+                    self.config.max_chunks
+                )
+
+                for chunk_index, chunk in enumerate(chunks, start=1):
+                    chunk_dir = output_dir / f"chunk_{chunk_index:02d}"
+                    chunk_dir.mkdir(parents=True, exist_ok=True)
+                    self._process_chunk(chunk, chunk_dir, aggregator, summary_tracker, chunk_index)
+                    chunks_processed += 1
+            else:
+                # Fallback to classic pipeline behaviour (no chunking)
+                self._process_chunk(
+                    protein_data,
+                    output_dir,
+                    aggregator,
+                    summary_tracker,
+                    chunk_index=1
+                )
+                chunks_processed = 1
+        finally:
+            total_time = time.time() - start_time
+            if aggregator:
+                aggregator.finalize(summary_tracker.total_proteins, time.time(), self.config.mode)
+                aggregator.close()
+                if aggregated_hdf5_path:
+                    logger.info(f"Aggregated HDF5 saved to {aggregated_hdf5_path}")
+
+        summary = self._generate_summary(summary_tracker, total_time)
+        summary["chunks_processed"] = chunks_processed
+        summary_file = Path(self.config.output_dir) / "extraction_summary.json"
+        try:
+            with open(summary_file, 'w') as f:
+                json.dump(summary, f, indent=2, default=str)
+        except Exception as e:
+            logger.error(f"Failed to save summary: {e}")
+
+        return summary
+    
+    def _save_results(self, results: List[FeatureResult], output_dir: Path):
+        """Save extraction results."""
+        logger.info(f"Saving {len(results)} results to {output_dir}")
+
+        if self.config.output_format in ['pickle', 'both', 'all']:
+            # Save as pickle
+            pickle_file = output_dir / "esm_features.pkl"
+            with open(pickle_file, 'wb') as f:
+                pickle.dump(results, f)
+            logger.info(f"Saved pickle format: {pickle_file}")
+
+        if self.config.output_format in ['numpy', 'both', 'all']:
+            # Save as numpy arrays
+            self._save_numpy_format(results, output_dir)
+
+        if self.config.output_format in ['hdf5', 'all']:
+            # Save as HDF5
+            self._save_hdf5_format(results, output_dir)
+
+            # Validate HDF5 file
+            hdf5_file = output_dir / "esm_features.h5"
+            if hdf5_file.exists():
+                self._validate_hdf5_file(hdf5_file)
+    
+    def _save_numpy_format(self, results: List[FeatureResult], output_dir: Path):
+        """Save results in numpy format with organized structure."""
+        # Create subdirectories for better organization
+        seq_dir = output_dir / "sequence_features"
+        struct_dir = output_dir / "structure_features"
+        combined_dir = output_dir / "combined_features"
+        
+        seq_dir.mkdir(exist_ok=True)
+        struct_dir.mkdir(exist_ok=True)
+        combined_dir.mkdir(exist_ok=True)
+        
+        # Collect data
+        ids = []
+        sequences = []
+        sequence_means = []
+        sequence_cls = []
+        structure_means = []
+        structure_cls = []
+        combined_means = []
+        
+        for result in results:
+            if result.error_message:
+                continue
+                
+            ids.append(result.protein_id)
+            sequences.append(result.sequence)
+            
+            # Collect sequence features
+            if result.sequence_mean is not None:
+                sequence_means.append(result.sequence_mean)
+                if result.sequence_cls is not None:
+                    sequence_cls.append(result.sequence_cls)
+            
+            # Collect structure features
+            if result.structure_mean is not None:
+                structure_means.append(result.structure_mean)
+                if result.structure_cls is not None:
+                    structure_cls.append(result.structure_cls)
+            
+            # Create combined features if both available
+            if result.sequence_mean is not None and result.structure_mean is not None:
+                combined_feature = np.concatenate([result.sequence_mean, result.structure_mean])
+                combined_means.append(combined_feature)
+        
+        # Save common metadata
+        if ids:
+            np.save(output_dir / "protein_ids.npy", np.array(ids))
+            np.save(output_dir / "sequences.npy", np.array(sequences))
+        
+        # Save sequence features
+        if sequence_means:
+            np.save(seq_dir / "features_mean.npy", np.array(sequence_means))
+            np.save(seq_dir / "protein_ids.npy", np.array(ids[:len(sequence_means)]))
+            if sequence_cls:
+                np.save(seq_dir / "features_cls.npy", np.array(sequence_cls))
+            logger.info(f"Saved sequence features: {np.array(sequence_means).shape}")
+        
+        # Save structure features
+        if structure_means:
+            np.save(struct_dir / "features_mean.npy", np.array(structure_means))
+            np.save(struct_dir / "protein_ids.npy", np.array(ids[:len(structure_means)]))
+            if structure_cls:
+                np.save(struct_dir / "features_cls.npy", np.array(structure_cls))
+            logger.info(f"Saved structure features: {np.array(structure_means).shape}")
+        
+        # Save combined features
+        if combined_means:
+            np.save(combined_dir / "features_mean.npy", np.array(combined_means))
+            np.save(combined_dir / "protein_ids.npy", np.array(ids[:len(combined_means)]))
+            logger.info(f"Saved combined features: {np.array(combined_means).shape}")
+            
+            # Save feature mapping info
+            feature_info = {
+                'sequence_dims': len(sequence_means[0]) if sequence_means else 0,
+                'structure_dims': len(structure_means[0]) if structure_means else 0,
+                'total_dims': len(combined_means[0]) if combined_means else 0,
+                'sequence_range': [0, len(sequence_means[0])] if sequence_means else None,
+                'structure_range': [len(sequence_means[0]), len(combined_means[0])] if sequence_means and combined_means else None
+            }
+            
+            import json
+            with open(combined_dir / "feature_info.json", 'w') as f:
+                json.dump(feature_info, f, indent=2)
+            logger.info(f"Feature dimensions - Sequence: {feature_info['sequence_dims']}, Structure: {feature_info['structure_dims']}, Combined: {feature_info['total_dims']}")
+
+    def _save_hdf5_format(self, results: List[FeatureResult], output_dir: Path):
+        """Save results in HDF5 format with protein-centric organization."""
+        if not HDF5_AVAILABLE:
+            logger.error("HDF5 format requested but h5py is not available")
+            return
+
+        logger.info(f"Saving {len(results)} results to HDF5 format in {output_dir}")
+
+        # Create HDF5 file
+        hdf5_file = output_dir / "esm_features.h5"
+
+        # Count feature types
+        sequence_only_count = 0
+        structure_only_count = 0
+        both_count = 0
+
+        for result in results:
+            if result.error_message:
+                continue
+            has_seq = result.sequence_mean is not None
+            has_struct = result.structure_mean is not None
+
+            if has_seq and has_struct:
+                both_count += 1
+            elif has_seq:
+                sequence_only_count += 1
+            elif has_struct:
+                structure_only_count += 1
+
+        # Setup compression options
+        compression_opts = {}
+        if self.config.hdf5_compression:
+            compression_opts['compression'] = self.config.hdf5_compression
+            if self.config.hdf5_compression == 'gzip':
+                compression_opts['compression_opts'] = self.config.hdf5_compression_level
+            compression_opts['shuffle'] = self.config.hdf5_shuffle
+            compression_opts['fletcher32'] = self.config.hdf5_fletcher32
+
+        # String data doesn't work well with any filters
+        string_opts = {}
+
+        # Remove duplicates and filter valid results
+        unique_results = {}
+        for result in results:
+            if result.error_message:
+                continue
+            if result.protein_id in unique_results:
+                logger.warning(f"Duplicate protein ID found: {result.protein_id}, keeping first occurrence")
+                continue
+            unique_results[result.protein_id] = result
+
+        valid_results = list(unique_results.values())
+        logger.info(f"Saving {len(valid_results)} unique proteins (removed {len(results) - len(valid_results)} duplicates/errors)")
+
+        try:
+            # Calculate statistics for valid results
+            sequence_only_count = sum(1 for r in valid_results if r.sequence_mean is not None and r.structure_mean is None)
+            structure_only_count = sum(1 for r in valid_results if r.sequence_mean is None and r.structure_mean is not None)
+            both_count = sum(1 for r in valid_results if r.sequence_mean is not None and r.structure_mean is not None)
+
+            with h5py.File(hdf5_file, 'w') as f:
+                # Create metadata group with global attributes
+                metadata_group = f.create_group('metadata')
+                metadata_group.attrs['total_proteins'] = len(valid_results)
+                metadata_group.attrs['sequence_feature_dim'] = 1280  # ESM-2 dimension
+                metadata_group.attrs['structure_feature_dim'] = 512  # ESM-if dimension
+                metadata_group.attrs['sequence_only'] = sequence_only_count
+                metadata_group.attrs['structure_only'] = structure_only_count
+                metadata_group.attrs['both'] = both_count
+                metadata_group.attrs['creation_time'] = time.time()
+                metadata_group.attrs['script_version'] = '1.0'
+                metadata_group.attrs['extraction_mode'] = self.config.mode
+
+                # Create proteins group
+                proteins_group = f.create_group('proteins')
+
+                # Save each protein's data
+                for result in valid_results:
+                    protein_group = proteins_group.create_group(result.protein_id)
+
+                    # Add protein attributes
+                    protein_group.attrs['protein_id'] = result.protein_id.encode('utf-8')
+                    protein_group.attrs['sequence'] = result.sequence.encode('utf-8')
+                    protein_group.attrs['sequence_length'] = result.sequence_length
+                    protein_group.attrs['has_sequence'] = result.sequence_mean is not None
+                    protein_group.attrs['has_structure'] = result.structure_mean is not None
+
+                    # Save sequence features if available
+                    if result.sequence_mean is not None:
+                        if self.config.save_mean_pooled:
+                            protein_group.create_dataset('sequence_mean', data=result.sequence_mean, **compression_opts)
+
+                        if result.sequence_cls is not None and self.config.save_cls_token:
+                            protein_group.create_dataset('sequence_cls', data=result.sequence_cls, **compression_opts)
+
+                        if result.sequence_features is not None and self.config.save_per_residue:
+                            protein_group.create_dataset('sequence_features', data=result.sequence_features, **compression_opts)
+
+                    # Save structure features if available
+                    if result.structure_mean is not None:
+                        if self.config.save_mean_pooled:
+                            protein_group.create_dataset('structure_mean', data=result.structure_mean, **compression_opts)
+
+                        if result.structure_cls is not None and self.config.save_cls_token:
+                            protein_group.create_dataset('structure_cls', data=result.structure_cls, **compression_opts)
+
+                        if result.structure_features is not None and self.config.save_per_residue:
+                            protein_group.create_dataset('structure_features', data=result.structure_features, **compression_opts)
+
+            logger.info(f"Successfully saved HDF5 format: {hdf5_file}")
+
+            # Log file size and compression info
+            file_size_mb = hdf5_file.stat().st_size / (1024 * 1024)
+            logger.info(f"HDF5 file size: {file_size_mb:.2f} MB")
+            if self.config.hdf5_compression:
+                logger.info(f"Compression: {self.config.hdf5_compression} (level {self.config.hdf5_compression_level})")
+
+            # Log statistics
+            logger.info(f"Protein statistics:")
+            logger.info(f"  Sequence only: {sequence_only_count}")
+            logger.info(f"  Structure only: {structure_only_count}")
+            logger.info(f"  Both features: {both_count}")
+            logger.info(f"  Total: {sequence_only_count + structure_only_count + both_count}")
+
+        except Exception as e:
+            logger.error(f"Failed to save HDF5 format: {e}")
+            raise
+
+    def _validate_hdf5_file(self, hdf5_file: Path) -> bool:
+        """Validate that the saved HDF5 file can be read correctly."""
+        if not HDF5_AVAILABLE or not hdf5_file.exists():
+            return False
+
+        try:
+            with h5py.File(hdf5_file, 'r') as f:
+                logger.info("HDF5 file validation:")
+                logger.info(f"  File: {hdf5_file}")
+
+                # Check main groups
+                groups = list(f.keys())
+                logger.info(f"  Main groups: {groups}")
+
+                # Validate metadata
+                if 'metadata' in f:
+                    metadata = f['metadata']
+                    logger.info(f"  Metadata attributes:")
+                    logger.info(f"    Total proteins: {metadata.attrs.get('total_proteins', 'N/A')}")
+                    logger.info(f"    Sequence feature dim: {metadata.attrs.get('sequence_feature_dim', 'N/A')}")
+                    logger.info(f"    Structure feature dim: {metadata.attrs.get('structure_feature_dim', 'N/A')}")
+                    logger.info(f"    Sequence only: {metadata.attrs.get('sequence_only', 'N/A')}")
+                    logger.info(f"    Structure only: {metadata.attrs.get('structure_only', 'N/A')}")
+                    logger.info(f"    Both features: {metadata.attrs.get('both', 'N/A')}")
+
+                # Validate proteins group
+                if 'proteins' in f:
+                    proteins_group = f['proteins']
+                    protein_ids = list(proteins_group.keys())
+                    logger.info(f"  Number of proteins: {len(protein_ids)}")
+
+                    # Check first few proteins
+                    for i, protein_id in enumerate(protein_ids[:3]):
+                        protein_group = proteins_group[protein_id]
+                        logger.info(f"  Protein {i+1} ({protein_id}):")
+                        logger.info(f"    Sequence length: {protein_group.attrs.get('sequence_length', 'N/A')}")
+                        logger.info(f"    Has sequence: {protein_group.attrs.get('has_sequence', 'N/A')}")
+                        logger.info(f"    Has structure: {protein_group.attrs.get('has_structure', 'N/A')}")
+
+                        # Check datasets
+                        datasets = list(protein_group.keys())
+                        logger.info(f"    Datasets: {datasets}")
+
+                        # Check shapes
+                        for dataset_name in datasets:
+                            dataset = protein_group[dataset_name]
+                            logger.info(f"      {dataset_name}: {dataset.shape}")
+
+                logger.info("HDF5 file validation successful!")
+                return True
+
+        except Exception as e:
+            logger.error(f"HDF5 file validation failed: {e}")
+            return False
+
+    def load_hdf5_features(self, hdf5_file: Path, protein_ids: List[str] = None) -> Dict[str, Any]:
+        """
+        Load features from HDF5 file with new protein-centric structure.
+
+        Args:
+            hdf5_file: Path to HDF5 file
+            protein_ids: List of specific protein IDs to load (None for all)
+
+        Returns:
+            Dictionary containing loaded features and metadata
+        """
+        if not HDF5_AVAILABLE:
+            raise ImportError("h5py is required to load HDF5 files")
+
+        if not hdf5_file.exists():
+            raise FileNotFoundError(f"HDF5 file not found: {hdf5_file}")
+
+        result = {}
+
+        try:
+            with h5py.File(hdf5_file, 'r') as f:
+                # Load metadata
+                if 'metadata' in f:
+                    metadata = f['metadata']
+                    result['metadata'] = {
+                        'total_proteins': metadata.attrs.get('total_proteins'),
+                        'sequence_feature_dim': metadata.attrs.get('sequence_feature_dim'),
+                        'structure_feature_dim': metadata.attrs.get('structure_feature_dim'),
+                        'sequence_only': metadata.attrs.get('sequence_only'),
+                        'structure_only': metadata.attrs.get('structure_only'),
+                        'both': metadata.attrs.get('both'),
+                        'creation_time': metadata.attrs.get('creation_time'),
+                        'extraction_mode': metadata.attrs.get('extraction_mode')
+                    }
+
+                # Load protein data
+                if 'proteins' in f:
+                    proteins_group = f['proteins']
+                    available_protein_ids = list(proteins_group.keys())
+
+                    # Determine which proteins to load
+                    if protein_ids is None:
+                        target_protein_ids = available_protein_ids
+                    else:
+                        target_protein_ids = [pid for pid in protein_ids if pid in available_protein_ids]
+                        missing_ids = [pid for pid in protein_ids if pid not in available_protein_ids]
+                        if missing_ids:
+                            logger.warning(f"Protein IDs not found: {missing_ids}")
+
+                    result['proteins'] = {}
+
+                    for protein_id in target_protein_ids:
+                        protein_group = proteins_group[protein_id]
+                        protein_data = {}
+
+                        # Load attributes (handle both string and bytes)
+                        protein_id_attr = protein_group.attrs['protein_id']
+                        sequence_attr = protein_group.attrs['sequence']
+
+                        protein_data['protein_id'] = protein_id_attr.decode('utf-8') if isinstance(protein_id_attr, bytes) else protein_id_attr
+                        protein_data['sequence'] = sequence_attr.decode('utf-8') if isinstance(sequence_attr, bytes) else sequence_attr
+                        protein_data['sequence_length'] = protein_group.attrs['sequence_length']
+                        protein_data['has_sequence'] = protein_group.attrs['has_sequence']
+                        protein_data['has_structure'] = protein_group.attrs['has_structure']
+
+                        # Load datasets
+                        for dataset_name in protein_group.keys():
+                            protein_data[dataset_name] = protein_group[dataset_name][:]
+
+                        result['proteins'][protein_id] = protein_data
+
+                    result['loaded_protein_ids'] = target_protein_ids
+                    result['num_loaded'] = len(target_protein_ids)
+
+                logger.info(f"Successfully loaded data for {result.get('num_loaded', 0)} proteins from {hdf5_file}")
+                return result
+
+        except Exception as e:
+            logger.error(f"Failed to load HDF5 features: {e}")
+            raise
+
+    def load_protein_features(self, hdf5_file: Path, protein_id: str) -> Dict[str, Any]:
+        """
+        Load features for a specific protein.
+
+        Args:
+            hdf5_file: Path to HDF5 file
+            protein_id: Specific protein ID to load
+
+        Returns:
+            Dictionary containing protein features and metadata
+        """
+        data = self.load_hdf5_features(hdf5_file, [protein_id])
+        if protein_id in data.get('proteins', {}):
+            return data['proteins'][protein_id]
+        else:
+            raise KeyError(f"Protein {protein_id} not found in HDF5 file")
+
+    def _generate_summary(self, summary_tracker: ExtractionSummaryTracker, total_time: float) -> Dict[str, Any]:
+        summary = summary_tracker.to_summary_dict(total_time, self.config)
+
+        logger.info(
+            f"Extraction completed: {summary['successful']}/{summary['total_proteins']} successful"
+        )
+        logger.info(
+            f"Total time: {total_time:.2f}s, Average: {summary['average_time_per_protein']:.2f}s per protein"
+        )
+
+        return summary
+
+
+def main():
+    """Main function."""
+    parser = argparse.ArgumentParser(
+        description="Optimized ESM Feature Extraction",
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter
+    )
+    
+    # Input/Output
+    parser.add_argument("--fasta_dir", type=str, required=True,
+                       help="Directory containing FASTA files")
+    parser.add_argument("--pdb_dir", type=str, default=None,
+                       help="Directory containing PDB files (for structure features)")
+    parser.add_argument("--output_dir", type=str, default="o_linked_glycosylation_features",
+                       help="Output directory for extracted features")
+    
+    # Model paths
+    parser.add_argument("--sequence_model_path", type=str,
+                       default="esm-2/esm2_t33_650M/esm2_t33_650M_UR50D.pt",
+                       help="Path to ESM-2 sequence model")
+    parser.add_argument("--structure_model_path", type=str,
+                       default="esm-2/esm_if1_gvp4_t16_142M_UR50.pt",
+                       help="Path to ESM-if structure model")
+    
+    # Processing options
+    parser.add_argument("--mode", type=str, default="both",
+                       choices=["sequence", "structure", "both"],
+                       help="Feature extraction mode")
+    parser.add_argument("--batch_size", type=int, default=8,
+                       help="Batch size for processing")
+    parser.add_argument("--max_length", type=int, default=5000,
+                       help="Maximum sequence length (reduced from 6000 to prevent OOM)")
+    parser.add_argument("--num_gpus", type=int, default=1,
+                       help="Number of GPUs to use")
+
+    # Chunked processing
+    parser.add_argument("--max_proteins_per_chunk", type=int, default=None,
+                       help="Maximum number of proteins to process per chunk")
+    parser.add_argument("--max_chunks", type=int, default=None,
+                       help="Optional limit on number of chunks to process")
+    
+    # Memory optimization
+    parser.add_argument("--use_mixed_precision", action="store_true", default=True,
+                       help="Use mixed precision for memory efficiency")
+    parser.add_argument("--max_memory_gb", type=float, default=20.0,
+                       help="Maximum GPU memory to use (GB)")
+    
+    # Caching
+    parser.add_argument("--use_cache", action="store_true", default=True,
+                       help="Use feature caching")
+    parser.add_argument("--cache_dir", type=str, default="cache/feature_3",
+                       help="Cache directory")
+    parser.add_argument("--force_recompute", action="store_true", default=False,
+                       help="Force recomputation of cached features")
+    
+    # Output options
+    parser.add_argument("--save_per_residue", action="store_true", default=True,
+                       help="Save per-residue features")
+    parser.add_argument("--save_mean_pooled", action="store_true", default=True,
+                       help="Save mean-pooled features")
+    parser.add_argument("--save_cls_token", action="store_true", default=True,
+                       help="Save CLS token features")
+    parser.add_argument("--output_format", type=str, default="hdf5",
+                       choices=["pickle", "numpy", "hdf5", "both", "all"],
+                       help="Output format")
+
+    # HDF5 specific options
+    parser.add_argument("--hdf5_compression", type=str, default="gzip",
+                       choices=["gzip", "lzf", "szip", "none"],
+                       help="HDF5 compression algorithm")
+    parser.add_argument("--hdf5_compression_level", type=int, default=6,
+                       help="HDF5 compression level (0-9 for gzip)")
+    parser.add_argument("--hdf5_shuffle", action="store_true", default=True,
+                       help="Enable HDF5 shuffle filter for better compression")
+    parser.add_argument("--hdf5_fletcher32", action="store_true", default=True,
+                       help="Enable HDF5 Fletcher32 checksum")
+    parser.add_argument("--hdf5_chunk_size", type=int, default=None,
+                       help="HDF5 chunk size (None for auto-chunking)")
+
+    # Logging
+    parser.add_argument("--log_level", type=str, default="INFO",
+                       choices=["DEBUG", "INFO", "WARNING", "ERROR"],
+                       help="Logging level")
+    
+    args = parser.parse_args()
+    
+    # Set logging level
+    logging.getLogger().setLevel(getattr(logging, args.log_level))
+    
+    # Create configuration (exclude log_level as it's not part of ExtractionConfig)
+    config_args = vars(args).copy()
+    config_args.pop('log_level', None)  # Remove log_level from config args
+
+    # Handle HDF5 compression "none" -> None
+    if config_args.get('hdf5_compression') == 'none':
+        config_args['hdf5_compression'] = None
+
+    config = ExtractionConfig(**config_args)
+    
+    # Print configuration
+    logger.info("Feature Extraction Configuration:")
+    for key, value in asdict(config).items():
+        logger.info(f"  {key}: {value}")
+    
+    try:
+        # Run extraction pipeline
+        pipeline = FeatureExtractionPipeline(config)
+        summary = pipeline.run()
+        
+        logger.info("Feature extraction completed successfully!")
+        logger.info(f"Summary: {summary}")
+        
+    except Exception as e:
+        logger.error(f"Feature extraction failed: {e}")
+        import traceback
+        logger.error(f"Traceback: {traceback.format_exc()}")
+        sys.exit(1)
+
+
+if __name__ == "__main__":
+    main()
