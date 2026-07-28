@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="icon.png" alt="ProteinFlux" width="400"/>
+</p>
+
 # ProteinFlux
 
 SE(3) flow-matching model for generating protein molecular-dynamics (MD)
