@@ -113,7 +113,7 @@ proteinflux-release/
 ├── data/       # DataModule, trajectory dataset (single- and multi-dataset, PTM)
 ├── fluxsite/   # PTM-site prediction / feature extraction (standalone sub-package)
 ├── scripts/    # Training, inference, precompute and feature-extraction entry points
-└── splits/     # Dataset splits (name,seqres) for ATLAS / MoDEL / DynaMo-phos
+└── splits/     # Dataset splits (name,seqres) for ATLAS / mdCATH / MoDEL / DynaMo-phos
 ```
 
 ## Installation
@@ -140,10 +140,17 @@ Splits are provided under `splits/`, one directory per dataset, each with
 
 ```
 splits/
-├── atlas/         # ATLAS      (1550 / 194 / 194)
-├── model/         # MoDEL      (1114 / 139 / 140)
-└── dynamo_phos/   # DynaMo-phos (977 / 114 / 91)
+├── atlas/         # ATLAS       (1550 /  194 / 194)
+├── mdcath/        # mdCATH      (4318 /  540 / 539)
+├── model/         # MoDEL       (1114 /  139 / 140)
+└── dynamo_phos/   # DynaMo-phos  (977 /  114 /  91)
 ```
+
+Every set is split 80 / 10 / 10 and no `name` is shared between the subsets
+of a dataset. `mdcath/` covers all 5397 mdCATH domains. `model/` covers 1393
+of the 1500 MoDEL entries: entries whose reference sequence is multi-chain or
+carries unresolved (`X`) residues are excluded, and the `seqres` in these
+files is the resolved sequence, which is the authoritative one for training.
 
 To build new splits by sequence-cluster (avoids train/test leakage):
 
