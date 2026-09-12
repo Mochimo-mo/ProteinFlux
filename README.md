@@ -146,8 +146,11 @@ splits/
 └── dynamo_phos/   # DynaMo-phos  (977 /  114 /  91)
 ```
 
-Every set is split 80 / 10 / 10 and no `name` is shared between the subsets
-of a dataset. `mdcath/` covers all 5397 mdCATH domains. `model/` covers 1393
+No `name` is shared between the subsets of a dataset. Ratios are applied to
+sequence clusters rather than to records, so record counts approximate the
+80 / 10 / 10 target: ATLAS, mdCATH and MoDEL land within 0.1 pp of it, while
+DynaMo-phos is 82.7 / 9.6 / 7.7. `mdcath/` covers all 5397 mdCATH domains.
+`model/` covers 1393
 of the 1500 MoDEL entries: entries whose reference sequence is multi-chain or
 carries unresolved (`X`) residues are excluded, and the `seqres` in these
 files is the resolved sequence, which is the authoritative one for training.
