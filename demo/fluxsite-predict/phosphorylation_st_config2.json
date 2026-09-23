@@ -1,0 +1,139 @@
+{
+ 
+    "target_ptm_type": "phosphorylation",
+    "experiment_name": "phosphorylation_st_optimized",
+    "model_type": "dual_branch_fusion",
+    "core_model_type": "dual_branch_fusion",
+    
+    "seq_feature_dim": 1280,
+    "struct_feature_dim": 512,
+    "branch_hidden_dim": 512,
+    "fusion_hidden_dim": 512,
+
+    "use_moe": true,
+    "num_experts": 6,
+    "aux_loss_weight": 0.15,
+
+ 
+    "seq_transformer_layers": 6,
+    "struct_transformer_layers": 6,
+    "seq_attention_heads": 16,
+    "struct_attention_heads": 16,
+    "cross_attention_heads": 16,
+    
+    "dropout": 0.25,
+    "input_dropout": 0.25,
+    "hidden_dropout": 0.25,
+    "output_dropout": 0.25,
+    "attention_dropout": 0.25,
+    "modality_dropout": 0.1,
+    
+    "learning_rate": 3e-5,
+    "weight_decay": 0.1,
+    "batch_size": 256,
+    "num_epochs": 100,
+    "grad_accum_steps": 2,
+    "optimizer": "adamw",
+    "scheduler": "cosine_with_warmup",
+    "warmup_steps": 500,
+    
+    "use_early_stopping": true,
+    "early_stopping_patience": 3,
+    "early_stopping_monitor": "val_auc",
+    "early_stopping_mode": "max",
+    "restore_best_weights": true,
+    
+    "contrastive_weight": 0.1,
+    "contrastive_temperature": 0.1,
+    "contrastive_projection_dim": 256,
+    
+    "alignment_weight": 0.1,
+    "structure_similarity_weight": 0.0,
+    "aux_cls_weight": 0.2,
+
+    "use_focal_loss": true,
+    "focal_alpha": 0.6,
+    "focal_gamma": 2.0,
+    "use_contrastive_loss": true,
+    "use_adaptive_weighting": true,
+    "use_label_smoothing": true,
+    "label_smoothing": 0.1,
+    "use_hard_negative_mining": true,
+    "hard_negative_mining_ratio": 0.3,
+    
+    "dataloader_num_workers": 10,
+    "dataloader_prefetch_factor": 2,
+    "dataloader_persistent_workers": false,
+    "pin_memory": true,
+    "non_blocking": true,
+    
+    "use_enhanced_augmentation": true,
+    "augment_prob": 0.5,
+    "feature_noise_level": 0.15,
+    "feature_mask_prob": 0.25,
+    "use_mixup": true,
+    "mixup_alpha": 0.2,
+    "pos_weight": 1,
+    
+    "use_structure": true,
+    "use_explicit_features": true,
+    "joint_freeze_structure": false,
+    "joint_freeze_sequence": false,
+    
+    "lr_scale_seq": 0.3,
+    "lr_scale_struct": 1.0,
+    "lr_scale_fusion": 1.0,
+    
+    "optimize_threshold": true,
+    "threshold_metric": "f1",
+    "calibration_method": "platt",
+    "threshold_min_precision": 0.5,
+    "threshold_min_specificity": 0.7,
+    "enable_feature_normalization": false,
+    "window_size": 73,
+     "center_window_radius": 5,
+    "local_window_size": 21,
+    
+    "val_ratio": 0.1,
+    "test_ratio": 0.1,
+    "stratified_split": true,
+    "max_position_embeddings": 1024,
+
+    
+"use_kfold": true,
+  "kfold_splits": 5,
+  "kfold_stratified": true,
+  "kfold_shuffle": true,
+  "kfold_random_state": 42,
+  "kfold_save_models": true,
+  "kfold_ensemble_method": "average",
+  "kfold_save_predictions": true,
+  "kfold_detailed_metrics": true,
+  "stratified_batch_sampling": true,
+  "enforce_protein_balanced_batches": false,
+  "protein_batch_drop_last": false,
+
+   "enable_rl_controller": false,
+    "reinforcement_learning": {
+        "reward_type": "auc_improvement",
+        "exploration_epsilon": 0.2,
+        "policy_learning_rate": 0.05,
+        "discount_factor": 0.95,
+        "state_space": "gap_trend_metric",
+        "action_space": "reg_aug_5"
+    },
+
+    "train_data_path": "/phos_st/phos_st_training.csv",
+    "test_data_path": "/phos_st_testing_90.csv",
+    "features_path": "/phos_st/esm_features.h5",
+    "fasta_dir": "phos_st/fasta",
+    "pdb_dir": "phos_st/pdb",
+    "cache_dir": "/phos_st/cache",
+    "output_dir":"phos_st_data_ptms_output_Dual_attention_win63",
+     "lazy_cache_size": 128,
+
+     
+
+    "use_attention_pooling": true,
+    "use_center_focus": true
+}

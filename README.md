@@ -23,9 +23,10 @@ The release contains three components:
 Three phospho PTM types are supported: **SEP** (phosphoserine),
 **TPO** (phosphothreonine), **PTR** (phosphotyrosine).
 
-## Demo
+## Demos
 
-The [phosphorylation demo](demo/README.md) compares unmodified and phospho-conditioned TAF9 ensembles; run `python demo/run_phospho_demo.py --ckpt /path/to/ptm_esm2_fluxsite.ckpt`.
+- [ProteinFlux phosphorylation demo](demo/README.md): compare unmodified and phospho-conditioned TAF9 ensembles.
+- [FluxSite prediction demo](demo/fluxsite-predict/README.md): predict phosphorylation sites in Q08460.
 
 📄 For more information, see our paper: [*ProteinFlux: accurate, rapid and scalable generative prediction of protein dynamics driven by post-translational modifications*](https://www.biorxiv.org/content/10.64898/2026.05.06.721822v1) (bioRxiv, 2026).
 
